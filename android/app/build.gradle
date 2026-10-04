@@ -1,0 +1,77 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+// Release signing credentials are never committed. They are read from
+// android/key.properties (gitignored) for local builds, or from environment
+// variables in CI. See android/key.properties.example.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withReader("UTF-8") { keystoreProperties.load(it) }
+}
+
+def signingValue = { String propertyName, String envName ->
+    keystoreProperties.getProperty(propertyName) ?: System.getenv(envName)
+}
+
+def releaseStoreFile = signingValue("storeFile", "ANDROID_KEYSTORE_PATH")
+def hasReleaseSigning = releaseStoreFile != null
+
+android {
+    namespace = "io.github.davidtanner.remind_me_again"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        applicationId = "io.github.davidtanner.remind_me_again"
+        // You can update the following values to match your application needs.
+        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile = file(releaseStoreFile)
+                storePassword = signingValue("storePassword", "ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "ANDROID_KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.release
+            } else {
+                // Falls back to debug keys so `flutter run --release` works locally.
+                // Debug-signed builds are rejected by Google Play.
+                logger.warn("No release keystore configured; signing release build with debug keys.")
+                signingConfig = signingConfigs.debug
+            }
+            minifyEnabled = true
+            shrinkResources = true
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}

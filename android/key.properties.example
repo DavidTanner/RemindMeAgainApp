@@ -1,0 +1,11 @@
+# Copy to android/key.properties (gitignored) and fill in for local release builds.
+# NEVER commit key.properties or the keystore itself. Back the keystore up
+# somewhere safe (e.g. a password manager); losing it means you cannot update
+# the app on Google Play unless you use Play App Signing.
+#
+# In CI, set these environment variables from GitHub Actions secrets instead:
+#   ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+storeFile=/absolute/path/to/upload-keystore.jks
+storePassword=
+keyAlias=upload
+keyPassword=
