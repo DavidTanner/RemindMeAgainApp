@@ -1,0 +1,35 @@
+name: Test
+
+# Reusable workflow: format, analyze, and test. Called from ci.yml.
+on:
+  workflow_call:
+    inputs:
+      flutter-version:
+        description: Flutter SDK version to install.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  analyze-and-test:
+    name: Analyze & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ inputs.flutter-version }}
+          cache: true
+
+      # --enforce-lockfile fails if pubspec.lock is out of date or any package hash differs.
+      - run: flutter pub get --enforce-lockfile
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze --fatal-infos
+      - run: flutter test
