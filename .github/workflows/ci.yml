@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FLUTTER_VERSION: "3.24.4"
+  FLUTTER_VERSION: "3.47.6"
 
 # Third-party actions are pinned to full commit SHAs (tag in the trailing comment)
 # so a moved or compromised tag cannot change what runs. Dependabot updates them.
