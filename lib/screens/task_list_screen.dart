@@ -7,7 +7,8 @@ import '../widgets/task_card.dart';
 import '../widgets/task_form_sheet.dart';
 
 /// Main screen displaying the user's tasks synced with Google Tasks off-device,
-/// with status filter chips (All, Active, Completed) and date-based section grouping.
+/// with status filter chips (Active, Completed, All) and date-based section grouping.
+/// The Active filter is selected by default.
 class TaskListScreen extends StatefulWidget {
   const TaskListScreen({
     super.key,
@@ -103,7 +104,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
   bool _isLoadingTasks = false;
   String? _errorMessage;
 
-  TaskFilter _selectedFilter = TaskFilter.all;
+  TaskFilter _selectedFilter = TaskFilter.active;
   String _searchQuery = '';
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
@@ -688,6 +689,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
                     child: groupedTasks.isEmpty
                         ? _EmptyTasksState(
                             filter: _selectedFilter,
+                            hasAnyTasks: _tasks.isNotEmpty,
                             hasSearchQuery: _searchQuery.trim().isNotEmpty,
                             onCreateTask: () => _openTaskForm(),
                           )
@@ -938,11 +940,13 @@ class _SectionHeader extends StatelessWidget {
 class _EmptyTasksState extends StatelessWidget {
   const _EmptyTasksState({
     required this.filter,
+    required this.hasAnyTasks,
     required this.hasSearchQuery,
     required this.onCreateTask,
   });
 
   final TaskFilter filter;
+  final bool hasAnyTasks;
   final bool hasSearchQuery;
   final VoidCallback onCreateTask;
 
@@ -957,6 +961,9 @@ class _EmptyTasksState extends StatelessWidget {
     if (hasSearchQuery) {
       title = 'No matching tasks';
       subtitle = 'Try adjusting your search keywords or filter selection.';
+    } else if (!hasAnyTasks) {
+      title = 'No tasks yet';
+      subtitle = 'Add your first task with a due date or all-day reminder to get started.';
     } else {
       switch (filter) {
         case TaskFilter.all:
@@ -1000,7 +1007,8 @@ class _EmptyTasksState extends StatelessWidget {
               ),
               textAlign: TextAlign.center,
             ),
-            if (!hasSearchQuery && filter != TaskFilter.completed) ...<Widget>[
+            if (!hasSearchQuery &&
+                (!hasAnyTasks || filter != TaskFilter.completed)) ...<Widget>[
               const SizedBox(height: 20),
               FilledButton.tonalIcon(
                 onPressed: onCreateTask,

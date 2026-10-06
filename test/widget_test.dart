@@ -58,6 +58,24 @@ void main() {
       expect(find.text('Remind Me Again'), findsOneWidget);
       expect(find.text('5 active • 1 completed'), findsOneWidget);
 
+      // Filter chips are ordered Active, Completed, All
+      final List<String> chipOrder = find
+          .byWidgetPredicate((Widget w) => w is FilterChip)
+          .evaluate()
+          .map(
+            (Element e) =>
+                ((e.widget as FilterChip).key! as ValueKey<String>).value,
+          )
+          .toList();
+      expect(chipOrder, <String>[
+        'filter-chip-active',
+        'filter-chip-completed',
+        'filter-chip-all',
+      ]);
+
+      // Active filter is selected by default, so the completed task is hidden
+      expect(find.text('Schedule dentist checkup'), findsNothing);
+
       // Verify overdue timed task
       expect(find.text('Submit quarterly expense report'), findsOneWidget);
       expect(find.text('Yesterday • 4:30 PM'), findsOneWidget);
@@ -68,7 +86,9 @@ void main() {
       expect(find.text('Renew annual library membership'), findsOneWidget);
       expect(find.text('Today • All day'), findsWidgets);
 
-      // Scroll down to verify completed task with completed timestamp
+      // Switch to All, then scroll down to verify completed task with timestamp
+      await tester.tap(find.byKey(const ValueKey<String>('filter-chip-all')));
+      await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
         find.text('Schedule dentist checkup'),
         200,
@@ -106,16 +126,16 @@ void main() {
       RemindMeAgainApp(initialTasks: tasks, referenceNow: fixedNow),
     );
 
-    // Initially on 'All'
+    // Initially on 'Active'
     expect(find.text('Buy groceries'), findsOneWidget);
-    expect(find.text('File taxes'), findsOneWidget);
+    expect(find.text('File taxes'), findsNothing);
 
-    // Tap 'Active' filter
-    await tester.tap(find.byKey(const ValueKey<String>('filter-chip-active')));
+    // Tap 'All' filter
+    await tester.tap(find.byKey(const ValueKey<String>('filter-chip-all')));
     await tester.pumpAndSettle();
 
     expect(find.text('Buy groceries'), findsOneWidget);
-    expect(find.text('File taxes'), findsNothing);
+    expect(find.text('File taxes'), findsOneWidget);
 
     // Tap 'Completed' filter
     await tester.tap(
@@ -148,12 +168,21 @@ void main() {
 
       expect(find.text('Completed Today at 2:30 PM'), findsNothing);
 
-      // Mark as completed
+      // Mark as completed; it disappears from the default Active view
       await tester.tap(find.byKey(const ValueKey<String>('task-checkbox-t1')));
       await tester.pumpAndSettle();
 
-      expect(find.text('Completed Today at 2:30 PM'), findsOneWidget);
+      expect(find.text('Call plumber'), findsNothing);
+      expect(find.text('All caught up!'), findsOneWidget);
       expect(find.text('0 active • 1 completed'), findsOneWidget);
+
+      // Switch to Completed to see the completion timestamp
+      await tester.tap(
+        find.byKey(const ValueKey<String>('filter-chip-completed')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Completed Today at 2:30 PM'), findsOneWidget);
 
       // Uncheck to mark active again
       await tester.tap(find.byKey(const ValueKey<String>('task-checkbox-t1')));

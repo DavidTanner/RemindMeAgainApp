@@ -16,10 +16,11 @@ enum TaskStatus {
 }
 
 /// Filter options for viewing tasks on the main screen.
+/// Declaration order determines the order of the filter chips on screen.
 enum TaskFilter {
-  all,
   active,
-  completed;
+  completed,
+  all;
 
   String get label {
     switch (this) {
