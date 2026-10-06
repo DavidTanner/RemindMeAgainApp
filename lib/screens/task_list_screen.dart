@@ -1,15 +1,25 @@
 import 'package:flutter/material.dart';
 
 import '../models/task.dart';
+import '../services/google_auth_service.dart';
+import '../services/task_repository.dart';
 import '../widgets/task_card.dart';
 import '../widgets/task_form_sheet.dart';
 
-/// Main screen displaying the user's tasks with status filter chips
-/// (All, Active, Completed) and date-based section grouping.
+/// Main screen displaying the user's tasks synced with Google Tasks off-device,
+/// with status filter chips (All, Active, Completed) and date-based section grouping.
 class TaskListScreen extends StatefulWidget {
-  const TaskListScreen({super.key, this.initialTasks, this.referenceNow});
+  const TaskListScreen({
+    super.key,
+    this.initialTasks,
+    this.taskRepository,
+    this.authService,
+    this.referenceNow,
+  });
 
   final List<Task>? initialTasks;
+  final TaskRepository? taskRepository;
+  final GoogleAuthService? authService;
   final DateTime? referenceNow;
 
   /// Generates default pre-populated sample tasks relative to [now].
@@ -83,7 +93,16 @@ class TaskListScreen extends StatefulWidget {
 }
 
 class _TaskListScreenState extends State<TaskListScreen> {
-  late final List<Task> _tasks;
+  final List<Task> _tasks = <Task>[];
+  TaskRepository? _repository;
+  GoogleAuthService? _authService;
+  GoogleAuthUser? _currentUser;
+
+  bool _isCheckingAuth = false;
+  bool _isSigningIn = false;
+  bool _isLoadingTasks = false;
+  String? _errorMessage;
+
   TaskFilter _selectedFilter = TaskFilter.all;
   String _searchQuery = '';
   bool _isSearching = false;
@@ -91,18 +110,163 @@ class _TaskListScreenState extends State<TaskListScreen> {
 
   DateTime get _now => widget.referenceNow ?? DateTime.now();
 
+  bool get _requiresSignIn => _authService != null && _repository == null;
+
   @override
   void initState() {
     super.initState();
-    _tasks = List<Task>.from(
-      widget.initialTasks ?? TaskListScreen.defaultSampleTasks(_now),
-    );
+    if (widget.taskRepository != null) {
+      _repository = widget.taskRepository;
+      if (widget.initialTasks != null) {
+        _tasks.addAll(widget.initialTasks!);
+      } else {
+        _loadTasks();
+      }
+    } else if (widget.initialTasks != null && widget.authService == null) {
+      _tasks.addAll(widget.initialTasks!);
+      _repository = InMemoryTaskRepository(_tasks);
+    } else {
+      _authService = widget.authService ?? GoogleSignInAuthService();
+      _isCheckingAuth = true;
+      _restoreAuthSession();
+    }
   }
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreAuthSession() async {
+    try {
+      final GoogleAuthSession? session = await _authService!.restoreSession();
+      if (!mounted) {
+        return;
+      }
+      if (session != null) {
+        setState(() {
+          _currentUser = session.user;
+          _repository = session.taskRepository;
+          _isCheckingAuth = false;
+          _errorMessage = null;
+        });
+        await _loadTasks();
+      } else {
+        setState(() {
+          _isCheckingAuth = false;
+        });
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isCheckingAuth = false;
+        _errorMessage = 'Failed to restore Google session: $error';
+      });
+    }
+  }
+
+  Future<void> _handleSignIn() async {
+    if (_authService == null || _isSigningIn) {
+      return;
+    }
+    setState(() {
+      _isSigningIn = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final GoogleAuthSession? session = await _authService!.signIn();
+      if (!mounted) {
+        return;
+      }
+      if (session != null) {
+        setState(() {
+          _currentUser = session.user;
+          _repository = session.taskRepository;
+          _isSigningIn = false;
+        });
+        await _loadTasks();
+      } else {
+        setState(() {
+          _isSigningIn = false;
+        });
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isSigningIn = false;
+        _errorMessage = 'Google Sign-In failed: $error';
+      });
+    }
+  }
+
+  Future<void> _handleSignOut() async {
+    if (_authService == null) {
+      return;
+    }
+    try {
+      await _authService!.signOut();
+    } catch (_) {
+      // Ignore sign-out errors and clear local session state.
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _currentUser = null;
+      _repository = null;
+      _tasks.clear();
+      _isSearching = false;
+      _searchController.clear();
+      _searchQuery = '';
+      _errorMessage = null;
+    });
+  }
+
+  Future<void> _loadTasks() async {
+    final TaskRepository? repository = _repository;
+    if (repository == null) {
+      return;
+    }
+    setState(() {
+      _isLoadingTasks = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final List<Task> fetched = await repository.fetchTasks();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _tasks
+          ..clear()
+          ..addAll(fetched);
+        _isLoadingTasks = false;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isLoadingTasks = false;
+        _errorMessage = 'Failed to sync with Google Tasks: $error';
+      });
+    }
+  }
+
+  void _showSyncError(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   int _countForFilter(TaskFilter filter) {
@@ -178,30 +342,105 @@ class _TaskListScreenState extends State<TaskListScreen> {
     return grouped;
   }
 
-  void _toggleTaskStatus(Task task) {
+  Future<void> _toggleTaskStatus(Task task) async {
     final int index = _tasks.indexWhere((Task t) => t.id == task.id);
     if (index == -1) {
       return;
     }
+    final Task previous = _tasks[index];
+    final Task toggled = previous.toggleStatus(now: _now);
     setState(() {
-      _tasks[index] = _tasks[index].toggleStatus(now: _now);
+      _tasks[index] = toggled;
     });
+
+    final TaskRepository? repository = _repository;
+    if (repository == null) {
+      return;
+    }
+
+    try {
+      final Task persisted = await repository.updateTask(toggled);
+      if (!mounted) {
+        return;
+      }
+      final int currentIndex = _tasks.indexWhere(
+        (Task t) => t.id == toggled.id,
+      );
+      if (currentIndex != -1) {
+        setState(() {
+          _tasks[currentIndex] = persisted;
+        });
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      final int currentIndex = _tasks.indexWhere(
+        (Task t) => t.id == toggled.id,
+      );
+      if (currentIndex != -1) {
+        setState(() {
+          _tasks[currentIndex] = previous;
+        });
+      }
+      _showSyncError('Failed to update task in Google Tasks: $error');
+    }
   }
 
-  void _saveTask(Task updatedOrNewTask) {
+  Future<void> _saveTask(Task updatedOrNewTask) async {
     final int index = _tasks.indexWhere(
       (Task t) => t.id == updatedOrNewTask.id,
     );
+    final bool isExisting = index >= 0;
+    final Task? previous = isExisting ? _tasks[index] : null;
+
     setState(() {
-      if (index >= 0) {
+      if (isExisting) {
         _tasks[index] = updatedOrNewTask;
       } else {
         _tasks.insert(0, updatedOrNewTask);
       }
     });
+
+    final TaskRepository? repository = _repository;
+    if (repository == null) {
+      return;
+    }
+
+    try {
+      final Task persisted = isExisting
+          ? await repository.updateTask(updatedOrNewTask)
+          : await repository.createTask(updatedOrNewTask);
+      if (!mounted) {
+        return;
+      }
+      final int currentIndex = _tasks.indexWhere(
+        (Task t) => t.id == updatedOrNewTask.id,
+      );
+      if (currentIndex != -1) {
+        setState(() {
+          _tasks[currentIndex] = persisted;
+        });
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        final int currentIndex = _tasks.indexWhere(
+          (Task t) => t.id == updatedOrNewTask.id,
+        );
+        if (isExisting && previous != null && currentIndex != -1) {
+          _tasks[currentIndex] = previous;
+        } else if (!isExisting && currentIndex != -1) {
+          _tasks.removeAt(currentIndex);
+        }
+      });
+      _showSyncError('Failed to save task to Google Tasks: $error');
+    }
   }
 
-  void _deleteTask(Task task) {
+  Future<void> _deleteTask(Task task) async {
     final int index = _tasks.indexWhere((Task t) => t.id == task.id);
     if (index == -1) {
       return;
@@ -210,6 +449,26 @@ class _TaskListScreenState extends State<TaskListScreen> {
       _tasks.removeAt(index);
     });
 
+    final TaskRepository? repository = _repository;
+    if (repository != null) {
+      try {
+        await repository.deleteTask(task.id);
+      } catch (error) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          final int insertIndex = index.clamp(0, _tasks.length);
+          _tasks.insert(insertIndex, task);
+        });
+        _showSyncError('Failed to delete task from Google Tasks: $error');
+        return;
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -217,14 +476,43 @@ class _TaskListScreenState extends State<TaskListScreen> {
         action: SnackBarAction(
           label: 'Undo',
           onPressed: () {
-            setState(() {
-              final int insertIndex = index.clamp(0, _tasks.length);
-              _tasks.insert(insertIndex, task);
-            });
+            _undoDeleteTask(task, index);
           },
         ),
       ),
     );
+  }
+
+  Future<void> _undoDeleteTask(Task task, int originalIndex) async {
+    setState(() {
+      final int insertIndex = originalIndex.clamp(0, _tasks.length);
+      _tasks.insert(insertIndex, task);
+    });
+
+    final TaskRepository? repository = _repository;
+    if (repository == null) {
+      return;
+    }
+    try {
+      final Task recreated = await repository.createTask(task);
+      if (!mounted) {
+        return;
+      }
+      final int currentIndex = _tasks.indexWhere((Task t) => t.id == task.id);
+      if (currentIndex != -1) {
+        setState(() {
+          _tasks[currentIndex] = recreated;
+        });
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _tasks.removeWhere((Task t) => t.id == task.id);
+      });
+      _showSyncError('Failed to restore task in Google Tasks: $error');
+    }
   }
 
   Future<void> _openTaskForm({Task? task}) async {
@@ -245,6 +533,50 @@ class _TaskListScreenState extends State<TaskListScreen> {
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     final TextTheme textTheme = Theme.of(context).textTheme;
+
+    if (_isCheckingAuth) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text(
+            'Remind Me Again',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(
+            key: ValueKey<String>('auth-loading-indicator'),
+          ),
+        ),
+      );
+    }
+
+    if (_requiresSignIn) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                'Remind Me Again',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text(
+                'Google Tasks sync',
+                style: textTheme.labelMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        body: _GoogleSignInView(
+          isSigningIn: _isSigningIn,
+          errorMessage: _errorMessage,
+          onSignIn: _handleSignIn,
+        ),
+      );
+    }
+
     final List<Task> filtered = _filteredTasks;
     final Map<TaskDateGroup, List<Task>> groupedTasks = _groupTasks(filtered);
     final int activeCount = _countForFilter(TaskFilter.active);
@@ -299,6 +631,21 @@ class _TaskListScreenState extends State<TaskListScreen> {
               });
             },
           ),
+          IconButton(
+            key: const ValueKey<String>('refresh-tasks-button'),
+            icon: const Icon(Icons.sync_rounded),
+            tooltip: 'Sync with Google Tasks',
+            onPressed: _isLoadingTasks ? null : _loadTasks,
+          ),
+          if (_authService != null)
+            IconButton(
+              key: const ValueKey<String>('sign-out-button'),
+              icon: const Icon(Icons.logout_rounded),
+              tooltip: _currentUser != null
+                  ? 'Sign out (${_currentUser!.email})'
+                  : 'Sign out',
+              onPressed: _handleSignOut,
+            ),
           const SizedBox(width: 4),
         ],
       ),
@@ -315,41 +662,70 @@ class _TaskListScreenState extends State<TaskListScreen> {
             },
           ),
           const Divider(height: 1),
+          if (_errorMessage != null)
+            MaterialBanner(
+              key: const ValueKey<String>('sync-error-banner'),
+              backgroundColor: colorScheme.errorContainer,
+              content: Text(
+                _errorMessage!,
+                style: textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onErrorContainer,
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(onPressed: _loadTasks, child: const Text('Retry')),
+              ],
+            ),
           Expanded(
-            child: groupedTasks.isEmpty
-                ? _EmptyTasksState(
-                    filter: _selectedFilter,
-                    hasSearchQuery: _searchQuery.trim().isNotEmpty,
-                    onCreateTask: () => _openTaskForm(),
+            child: _isLoadingTasks && _tasks.isEmpty
+                ? const Center(
+                    child: CircularProgressIndicator(
+                      key: ValueKey<String>('tasks-loading-indicator'),
+                    ),
                   )
-                : ListView.builder(
-                    padding: const EdgeInsets.only(top: 8, bottom: 96),
-                    itemCount: groupedTasks.length,
-                    itemBuilder: (BuildContext context, int sectionIndex) {
-                      final TaskDateGroup group = groupedTasks.keys.elementAt(
-                        sectionIndex,
-                      );
-                      final List<Task> sectionTasks = groupedTasks[group]!;
+                : RefreshIndicator(
+                    onRefresh: _loadTasks,
+                    child: groupedTasks.isEmpty
+                        ? _EmptyTasksState(
+                            filter: _selectedFilter,
+                            hasSearchQuery: _searchQuery.trim().isNotEmpty,
+                            onCreateTask: () => _openTaskForm(),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.only(top: 8, bottom: 96),
+                            itemCount: groupedTasks.length,
+                            itemBuilder:
+                                (BuildContext context, int sectionIndex) {
+                                  final TaskDateGroup group = groupedTasks.keys
+                                      .elementAt(sectionIndex);
+                                  final List<Task> sectionTasks =
+                                      groupedTasks[group]!;
 
-                      return Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          _SectionHeader(
-                            group: group,
-                            count: sectionTasks.length,
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: <Widget>[
+                                      _SectionHeader(
+                                        group: group,
+                                        count: sectionTasks.length,
+                                      ),
+                                      for (final Task task in sectionTasks)
+                                        TaskCard(
+                                          key: ValueKey<String>(
+                                            'task-card-${task.id}',
+                                          ),
+                                          task: task,
+                                          now: _now,
+                                          onToggleStatus: () =>
+                                              _toggleTaskStatus(task),
+                                          onTap: () =>
+                                              _openTaskForm(task: task),
+                                          onDelete: () => _deleteTask(task),
+                                        ),
+                                    ],
+                                  );
+                                },
                           ),
-                          for (final Task task in sectionTasks)
-                            TaskCard(
-                              key: ValueKey<String>('task-card-${task.id}'),
-                              task: task,
-                              now: _now,
-                              onToggleStatus: () => _toggleTaskStatus(task),
-                              onTap: () => _openTaskForm(task: task),
-                              onDelete: () => _deleteTask(task),
-                            ),
-                        ],
-                      );
-                    },
                   ),
           ),
         ],
@@ -359,6 +735,103 @@ class _TaskListScreenState extends State<TaskListScreen> {
         onPressed: () => _openTaskForm(),
         icon: const Icon(Icons.add_task_rounded),
         label: const Text('New Task'),
+      ),
+    );
+  }
+}
+
+class _GoogleSignInView extends StatelessWidget {
+  const _GoogleSignInView({
+    required this.isSigningIn,
+    required this.errorMessage,
+    required this.onSignIn,
+  });
+
+  final bool isSigningIn;
+  final String? errorMessage;
+  final VoidCallback onSignIn;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(32),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  color: colorScheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.cloud_sync_rounded,
+                  size: 48,
+                  color: colorScheme.onPrimaryContainer,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Connect to Google Tasks',
+                style: textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Sign in with your Google account to store and sync your reminders off device in your default Google Tasks list.',
+                style: textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              if (errorMessage != null) ...<Widget>[
+                const SizedBox(height: 20),
+                Container(
+                  key: const ValueKey<String>('auth-error-message'),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: colorScheme.errorContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      Icon(
+                        Icons.error_outline_rounded,
+                        color: colorScheme.onErrorContainer,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          errorMessage!,
+                          style: textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onErrorContainer,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 28),
+              FilledButton.icon(
+                key: const ValueKey<String>('google-sign-in-button'),
+                onPressed: isSigningIn ? null : onSignIn,
+                icon: const Icon(Icons.login_rounded),
+                label: Text(
+                  isSigningIn ? 'Signing in...' : 'Sign in with Google',
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
