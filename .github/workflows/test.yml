@@ -2,6 +2,7 @@ name: Test
 
 # Reusable workflow: format, analyze, and test. Called from ci.yml.
 on:
+  pull_request:
   workflow_call:
     inputs:
       flutter-version:
