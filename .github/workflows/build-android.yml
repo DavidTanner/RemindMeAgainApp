@@ -1,0 +1,47 @@
+name: Build Android
+
+# Reusable workflow: release AAB + APK build. Called from ci.yml.
+on:
+  workflow_call:
+    inputs:
+      flutter-version:
+        description: Flutter SDK version to install.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ inputs.flutter-version }}
+          cache: true
+
+      - run: flutter pub get --enforce-lockfile
+      # No signing secrets here, so this verifies the release build compiles (debug-signed).
+      - run: flutter build appbundle --release --obfuscate --split-debug-info=build/symbols
+      # An APK can be sideloaded straight onto a device for testing (the AAB above cannot).
+      - run: flutter build apk --release --obfuscate --split-debug-info=build/symbols
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-apk-${{ github.sha }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
