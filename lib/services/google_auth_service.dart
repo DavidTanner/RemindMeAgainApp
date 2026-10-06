@@ -68,7 +68,7 @@ class GoogleSignInAuthService implements GoogleAuthService {
   http.Client? _activeAuthClient;
 
   Future<void> _ensureInitialized() {
-    const String envClientId = String.fromEnvironment('GOOGLE_CLIENT_ID');
+    const String envClientId = String.fromEnvironment('GOOGLE_IOS_CLIENT_ID');
     const String envServerClientId = String.fromEnvironment(
       'GOOGLE_SERVER_CLIENT_ID',
     );
