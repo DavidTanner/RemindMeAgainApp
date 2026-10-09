@@ -23,16 +23,6 @@ flutter analyze --fatal-infos
 flutter test
 ```
 
-## Google Tasks Off-Device Database Setup
-
-Remind Me Again stores tasks off-device in the signed-in user's default Google Tasks list (`@default`) using `google_sign_in` and `googleapis`.
-
-1. **Enable the Google Tasks API** in your Google Cloud project (`https://console.cloud.google.com/apis/library/tasks.googleapis.com`).
-2. **Configure the OAuth Consent Screen** and add the `https://www.googleapis.com/auth/tasks` scope.
-3. **Create OAuth 2.0 Client IDs**:
-   - **Android**: Register package name `io.github.davidtanner.remind_me_again` with your signing certificate SHA-1 fingerprint.
-   - **iOS**: Register bundle ID `io.github.davidtanner.remind_me_again` and supply `GOOGLE_CLIENT_ID` and `GOOGLE_REVERSED_CLIENT_ID` in Xcode build settings (referenced in `ios/Runner/Info.plist`), or pass `--dart-define=GOOGLE_CLIENT_ID=<client-id>` when running Flutter.
-
 ## Building releases
 
 Release builds are obfuscated; keep the generated symbol files (not committed)
