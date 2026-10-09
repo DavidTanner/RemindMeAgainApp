@@ -306,6 +306,7 @@ void main() {
         },
       ];
 
+      int singleTaskGetCount = 0;
       final MockClient mockHttpClient = MockClient((
         http.Request request,
       ) async {
@@ -353,6 +354,30 @@ void main() {
             headers: <String, String>{'content-type': 'application/json'},
           );
         }
+        if (request.method == 'GET' &&
+            path.startsWith('/tasks/v1/lists/@default/tasks/')) {
+          singleTaskGetCount++;
+          final String id = path.split('/').last;
+          final Map<String, dynamic>? item = remoteStore
+              .cast<Map<String, dynamic>?>()
+              .firstWhere(
+                (Map<String, dynamic>? item) => item!['id'] == id,
+                orElse: () => null,
+              );
+          if (item == null) {
+            return http.Response('Not found', 404);
+          }
+          return http.Response(
+            jsonEncode(<String, dynamic>{
+              ...item,
+              'kind': 'tasks#task',
+              'etag': '"etag-fresh"',
+              'webViewLink': 'https://tasks.google.com/task/$id',
+            }),
+            200,
+            headers: <String, String>{'content-type': 'application/json'},
+          );
+        }
         if (request.method == 'DELETE' &&
             path.startsWith('/tasks/v1/lists/@default/tasks/')) {
           final String id = path.split('/').last;
@@ -366,6 +391,7 @@ void main() {
 
       final GoogleTasksRepository repository = GoogleTasksRepository(
         tasksApi: gtasks.TasksApi(mockHttpClient),
+        httpClient: mockHttpClient,
       );
       final _FakeGoogleAuthService authService = _FakeGoogleAuthService(
         repository: repository,
@@ -393,6 +419,64 @@ void main() {
       expect(find.text('Sync project roadmap'), findsOneWidget);
       expect(find.text('Share Q4 milestones'), findsOneWidget);
       expect(find.text('Today • 4:00 PM'), findsOneWidget);
+      expect(find.text('Activates Today • 4:00 PM'), findsOneWidget);
+
+      // Long-press the card to open the debug sheet with the cached JSON
+      await tester.longPress(
+        find.byKey(const ValueKey<String>('task-card-remote-1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('task-debug-sheet')),
+        findsOneWidget,
+      );
+      final Finder debugSheet = find.byKey(
+        const ValueKey<String>('task-debug-sheet'),
+      );
+      Finder inSheet(Finder matching) =>
+          find.descendant(of: debugSheet, matching: matching);
+
+      expect(inSheet(find.textContaining('"id": "remote-1"')), findsOneWidget);
+      expect(
+        inSheet(find.textContaining('"due": "2026-10-05T00:00:00.000Z"')),
+        findsOneWidget,
+      );
+      expect(
+        inSheet(find.text('Notes tag [remind_me_again:due_time]')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('task-debug-activates')),
+          matching: find.text('Today • 4:00 PM'),
+        ),
+        findsOneWidget,
+      );
+      expect(inSheet(find.text('Pending (not yet active)')), findsOneWidget);
+
+      // Refresh performs a verbatim GET for the single task
+      await tester.tap(
+        find.byKey(const ValueKey<String>('task-debug-refresh-button')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(singleTaskGetCount, 1);
+      expect(
+        inSheet(find.textContaining('"etag": "\\"etag-fresh\\""')),
+        findsOneWidget,
+      );
+      expect(
+        inSheet(find.text('Fetched from the API just now.')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey<String>('task-debug-sheet')),
+        findsNothing,
+      );
 
       // Complete the remote task and verify PUT request updates remoteStore
       await tester.tap(
@@ -408,6 +492,197 @@ void main() {
 
       expect(authService.signOutCount, 1);
       expect(find.text('Connect to Google Tasks'), findsOneWidget);
+    },
+  );
+
+  test('GoogleTasksRepository honours a time-of-day in the API due timestamp when present', () {
+    // Google documents that the time portion of `due` is discarded, but if
+    // it is ever returned it takes precedence over the notes tag.
+    final DecodedDue fromTimestamp =
+        GoogleTasksRepository.decodeNotesAndDueDate(
+          rawNotes: 'Notes\n\n[remind_me_again:due_time=09:00]',
+          rawDue: '2026-10-05T17:30:00.000Z',
+        );
+    final DateTime expectedLocal = DateTime.parse('2026-10-05T17:30:00.000Z')
+        .toLocal();
+    expect(fromTimestamp.notes, 'Notes');
+    expect(fromTimestamp.isAllDay, isFalse);
+    expect(fromTimestamp.dueTimeSource, DueTimeSource.dueTimestamp);
+    expect(
+      fromTimestamp.dueDate,
+      DateTime(
+        expectedLocal.year,
+        expectedLocal.month,
+        expectedLocal.day,
+        expectedLocal.hour,
+        expectedLocal.minute,
+      ),
+    );
+
+    final DecodedDue fromTag = GoogleTasksRepository.decodeNotesAndDueDate(
+      rawNotes: '[remind_me_again:due_time=09:15]',
+      rawDue: '2026-10-05T00:00:00.000Z',
+    );
+    expect(fromTag.notes, '');
+    expect(fromTag.isAllDay, isFalse);
+    expect(fromTag.dueTimeSource, DueTimeSource.notesTag);
+    expect(fromTag.dueDate, DateTime(2026, 10, 5, 9, 15));
+
+    final DecodedDue dateOnly = GoogleTasksRepository.decodeNotesAndDueDate(
+      rawNotes: 'Plain notes',
+      rawDue: '2026-10-05T00:00:00.000Z',
+    );
+    expect(dateOnly.isAllDay, isTrue);
+    expect(dateOnly.dueTimeSource, DueTimeSource.none);
+    expect(dateOnly.dueDate, DateTime(2026, 10, 5));
+
+    final Task remote = GoogleTasksRepository.fromGoogleTask(
+      gtasks.Task(
+        id: 'g-1',
+        title: 'Keep JSON',
+        due: '2026-10-05T00:00:00.000Z',
+        status: 'needsAction',
+      ),
+    );
+    expect(remote.rawJson, isNotNull);
+    expect(remote.rawJson!['id'], 'g-1');
+    expect(remote.rawJson!['due'], '2026-10-05T00:00:00.000Z');
+    expect(remote.copyWith(title: 'Renamed').rawJson, remote.rawJson);
+  });
+
+  test('Task.activatesAt and isPendingActivation reflect the due schedule', () {
+    final DateTime now = DateTime(2026, 10, 5, 14, 30);
+
+    final Task timedLater = Task(
+      id: 'a',
+      title: 'Later today',
+      dueDate: DateTime(2026, 10, 5, 17, 0),
+      isAllDay: false,
+    );
+    expect(timedLater.activatesAt, DateTime(2026, 10, 5, 17, 0));
+    expect(timedLater.isPendingActivation(now), isTrue);
+
+    final Task timedEarlier = Task(
+      id: 'b',
+      title: 'Earlier today',
+      dueDate: DateTime(2026, 10, 5, 9, 0),
+      isAllDay: false,
+    );
+    expect(timedEarlier.isPendingActivation(now), isFalse);
+
+    final Task allDayTomorrow = Task(
+      id: 'c',
+      title: 'Tomorrow',
+      dueDate: DateTime(2026, 10, 6, 23, 59),
+      isAllDay: true,
+    );
+    expect(allDayTomorrow.activatesAt, DateTime(2026, 10, 6));
+    expect(allDayTomorrow.isPendingActivation(now), isTrue);
+
+    final Task allDayToday = Task(
+      id: 'd',
+      title: 'Today',
+      dueDate: DateTime(2026, 10, 5),
+      isAllDay: true,
+    );
+    expect(allDayToday.isPendingActivation(now), isFalse);
+
+    const Task noDue = Task(id: 'e', title: 'Whenever');
+    expect(noDue.activatesAt, isNull);
+    expect(noDue.isPendingActivation(now), isFalse);
+
+    final Task completed = timedLater.toggleStatus(now: now);
+    expect(completed.isPendingActivation(now), isFalse);
+  });
+
+  testWidgets(
+    'Shows activation chips and opens the task debug sheet from the card and the edit form',
+    (WidgetTester tester) async {
+      final List<Task> tasks = <Task>[
+        Task(
+          id: 't1',
+          title: 'Evening workout',
+          dueDate: DateTime(2026, 10, 5, 18, 0),
+          isAllDay: false,
+          dueTimeSource: DueTimeSource.notesTag,
+          rawJson: <String, dynamic>{
+            'id': 't1',
+            'title': 'Evening workout',
+            'due': '2026-10-05T00:00:00.000Z',
+          },
+        ),
+        Task(
+          id: 't2',
+          title: 'Morning stretch',
+          dueDate: DateTime(2026, 10, 5, 7, 0),
+          isAllDay: false,
+        ),
+        Task(
+          id: 't3',
+          title: 'Laundry',
+          dueDate: DateTime(2026, 10, 6),
+          isAllDay: true,
+        ),
+      ];
+
+      await tester.pumpWidget(
+        RemindMeAgainApp(initialTasks: tasks, referenceNow: fixedNow),
+      );
+
+      expect(find.text('Activates Today • 6:00 PM'), findsOneWidget);
+      expect(find.text('Active since Today • 7:00 AM'), findsOneWidget);
+      expect(find.text('Activates Tomorrow • Start of day'), findsOneWidget);
+
+      // Long-press opens the debug sheet with cached JSON
+      await tester.longPress(
+        find.byKey(const ValueKey<String>('task-card-t1')),
+      );
+      await tester.pumpAndSettle();
+
+      final Finder debugSheet = find.byKey(
+        const ValueKey<String>('task-debug-sheet'),
+      );
+      Finder inSheet(Finder matching) =>
+          find.descendant(of: debugSheet, matching: matching);
+
+      expect(debugSheet, findsOneWidget);
+      expect(
+        inSheet(find.textContaining('"title": "Evening workout"')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('task-debug-activates')),
+          matching: find.text('Today • 6:00 PM'),
+        ),
+        findsOneWidget,
+      );
+      expect(inSheet(find.text('Pending (not yet active)')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // A task that never synced has no JSON to show
+      await tester.longPress(
+        find.byKey(const ValueKey<String>('task-card-t2')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        inSheet(find.text('No API response cached for this task.')),
+        findsOneWidget,
+      );
+      expect(inSheet(find.text('Active now')), findsOneWidget);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pumpAndSettle();
+
+      // The edit form exposes the same view via the JSON button
+      await tester.tap(find.text('Evening workout'));
+      await tester.pumpAndSettle();
+      expect(find.text('Edit Task'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey<String>('task-debug-button')));
+      await tester.pumpAndSettle();
+      expect(debugSheet, findsOneWidget);
+      expect(inSheet(find.textContaining('"id": "t1"')), findsOneWidget);
     },
   );
 }
