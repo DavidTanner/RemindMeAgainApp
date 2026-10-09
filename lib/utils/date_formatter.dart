@@ -84,6 +84,21 @@ class TaskDateFormatter {
     return '$datePart • $timePart';
   }
 
+  /// Formats the moment a task becomes active.
+  /// Examples: "Today • 5:00 PM" for timed tasks, "Today • Start of day" for
+  /// all-day tasks.
+  static String formatActivation(
+    DateTime activatesAt, {
+    required bool isAllDay,
+    DateTime? now,
+  }) {
+    final String datePart = formatRelativeDate(activatesAt, now: now);
+    if (isAllDay) {
+      return '$datePart • Start of day';
+    }
+    return '$datePart • ${formatTime(activatesAt)}';
+  }
+
   /// Formats a completion timestamp including both the date and time.
   /// Example: "Completed Today at 2:15 PM" or "Completed Yesterday at 4:00 PM".
   static String formatCompletedTimestamp(

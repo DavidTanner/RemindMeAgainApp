@@ -15,6 +15,11 @@ abstract class TaskRepository {
 
   /// Deletes the task with [taskId] from the backing store.
   Future<void> deleteTask(String taskId);
+
+  /// Fetches the raw backing-store representation (for Google Tasks, the
+  /// verbatim REST API JSON) of the task with [taskId], for debugging.
+  /// Returns `null` when the store has no raw representation for the task.
+  Future<Map<String, dynamic>?> fetchTaskJson(String taskId);
 }
 
 /// In-memory implementation of [TaskRepository] used when `initialTasks`
@@ -50,5 +55,15 @@ class InMemoryTaskRepository implements TaskRepository {
   @override
   Future<void> deleteTask(String taskId) async {
     _tasks.removeWhere((Task t) => t.id == taskId);
+  }
+
+  @override
+  Future<Map<String, dynamic>?> fetchTaskJson(String taskId) async {
+    for (final Task task in _tasks) {
+      if (task.id == taskId) {
+        return task.rawJson;
+      }
+    }
+    return null;
   }
 }

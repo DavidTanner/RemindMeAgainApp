@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:googleapis/tasks/v1.dart' as gtasks;
+import 'package:http/http.dart' as http;
 
 import '../models/task.dart';
 import 'task_repository.dart';
@@ -8,10 +11,15 @@ class GoogleTasksRepository implements TaskRepository {
   GoogleTasksRepository({
     required this.tasksApi,
     this.taskListId = defaultTaskListId,
+    this.httpClient,
+    this.rootUrl = defaultRootUrl,
   });
 
   /// Identifier for the authenticated user's default Google Tasks list.
   static const String defaultTaskListId = '@default';
+
+  /// Base URL of the Google Tasks REST API.
+  static const String defaultRootUrl = 'https://tasks.googleapis.com/';
 
   static final RegExp _dueTimeTagPattern = RegExp(
     r'(?:\r?\n)*\[remind_me_again:due_time=(\d{2}):(\d{2})\]\s*$',
@@ -19,6 +27,13 @@ class GoogleTasksRepository implements TaskRepository {
 
   final gtasks.TasksApi tasksApi;
   final String taskListId;
+
+  /// Optional authenticated HTTP client. When provided, [fetchTaskJson]
+  /// performs a verbatim `GET` against the REST endpoint so the debug view
+  /// shows exactly what Google returned, including any fields the generated
+  /// [gtasks.Task] model does not know about.
+  final http.Client? httpClient;
+  final String rootUrl;
 
   @override
   Future<List<Task>> fetchTasks() async {
@@ -77,6 +92,35 @@ class GoogleTasksRepository implements TaskRepository {
     await tasksApi.tasks.delete(taskListId, taskId);
   }
 
+  @override
+  Future<Map<String, dynamic>?> fetchTaskJson(String taskId) async {
+    final http.Client? client = httpClient;
+    if (client == null) {
+      final gtasks.Task remote = await tasksApi.tasks.get(taskListId, taskId);
+      return remote.toJson();
+    }
+
+    final Uri uri = Uri.parse(
+      '${rootUrl}tasks/v1/lists/${Uri.encodeComponent(taskListId)}'
+      '/tasks/${Uri.encodeComponent(taskId)}',
+    );
+    final http.Response response = await client.get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw http.ClientException(
+        'Google Tasks API returned HTTP ${response.statusCode}: '
+        '${response.body}',
+        uri,
+      );
+    }
+    final Object? decoded = jsonDecode(response.body);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    throw const FormatException(
+      'Google Tasks API response was not a JSON object',
+    );
+  }
+
   /// Converts a domain [Task] into a Google Tasks API [gtasks.Task].
   ///
   /// Because the Google Tasks API `due` field only persists the calendar date
@@ -119,8 +163,10 @@ class GoogleTasksRepository implements TaskRepository {
         ? DateTime.tryParse(remote.completed!)?.toLocal()
         : null;
 
-    final ({String notes, DateTime? dueDate, bool isAllDay}) decoded =
-        decodeNotesAndDueDate(rawNotes: remote.notes, rawDue: remote.due);
+    final DecodedDue decoded = decodeNotesAndDueDate(
+      rawNotes: remote.notes,
+      rawDue: remote.due,
+    );
 
     return Task(
       id: remote.id ?? fallbackId ?? '',
@@ -130,6 +176,8 @@ class GoogleTasksRepository implements TaskRepository {
       completedAt: completedAt,
       dueDate: decoded.dueDate,
       isAllDay: decoded.isAllDay,
+      dueTimeSource: decoded.dueTimeSource,
+      rawJson: remote.toJson(),
     );
   }
 
@@ -157,8 +205,18 @@ class GoogleTasksRepository implements TaskRepository {
 
   /// Extracts user-visible notes and reconstructs [dueDate] and [isAllDay]
   /// from the Google Tasks `notes` and `due` fields.
-  static ({String notes, DateTime? dueDate, bool isAllDay})
-  decodeNotesAndDueDate({required String? rawNotes, required String? rawDue}) {
+  ///
+  /// Precedence for the time-of-day:
+  /// 1. A non-midnight (UTC) time inside the `due` timestamp. The Google Tasks
+  ///    API documents that it discards the time portion, so today this is
+  ///    always `T00:00:00.000Z`, but if Google ever starts returning the time
+  ///    set in Google Calendar it is honoured here automatically.
+  /// 2. The `[remind_me_again:due_time=HH:mm]` tag this app writes to notes.
+  /// 3. Otherwise the task is treated as all-day on the `due` calendar date.
+  static DecodedDue decodeNotesAndDueDate({
+    required String? rawNotes,
+    required String? rawDue,
+  }) {
     final String sourceNotes = rawNotes ?? '';
     final RegExpMatch? match = _dueTimeTagPattern.firstMatch(sourceNotes);
 
@@ -167,12 +225,33 @@ class GoogleTasksRepository implements TaskRepository {
         : sourceNotes.trim();
 
     if (rawDue == null || rawDue.isEmpty) {
-      return (notes: cleanNotes, dueDate: null, isAllDay: true);
+      return DecodedDue(notes: cleanNotes);
     }
 
     final DateTime? parsedDue = DateTime.tryParse(rawDue)?.toUtc();
     if (parsedDue == null) {
-      return (notes: cleanNotes, dueDate: null, isAllDay: true);
+      return DecodedDue(notes: cleanNotes);
+    }
+
+    final bool dueCarriesTime =
+        parsedDue.hour != 0 ||
+        parsedDue.minute != 0 ||
+        parsedDue.second != 0 ||
+        parsedDue.millisecond != 0;
+    if (dueCarriesTime) {
+      final DateTime local = parsedDue.toLocal();
+      return DecodedDue(
+        notes: cleanNotes,
+        dueDate: DateTime(
+          local.year,
+          local.month,
+          local.day,
+          local.hour,
+          local.minute,
+        ),
+        isAllDay: false,
+        dueTimeSource: DueTimeSource.dueTimestamp,
+      );
     }
 
     if (match != null) {
@@ -184,7 +263,7 @@ class GoogleTasksRepository implements TaskRepository {
           hour <= 23 &&
           minute >= 0 &&
           minute <= 59) {
-        return (
+        return DecodedDue(
           notes: cleanNotes,
           dueDate: DateTime(
             parsedDue.year,
@@ -194,14 +273,29 @@ class GoogleTasksRepository implements TaskRepository {
             minute,
           ),
           isAllDay: false,
+          dueTimeSource: DueTimeSource.notesTag,
         );
       }
     }
 
-    return (
+    return DecodedDue(
       notes: cleanNotes,
       dueDate: DateTime(parsedDue.year, parsedDue.month, parsedDue.day),
-      isAllDay: true,
     );
   }
+}
+
+/// Result of [GoogleTasksRepository.decodeNotesAndDueDate].
+class DecodedDue {
+  const DecodedDue({
+    required this.notes,
+    this.dueDate,
+    this.isAllDay = true,
+    this.dueTimeSource = DueTimeSource.none,
+  });
+
+  final String notes;
+  final DateTime? dueDate;
+  final bool isAllDay;
+  final DueTimeSource dueTimeSource;
 }

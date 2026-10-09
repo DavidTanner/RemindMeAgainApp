@@ -4,7 +4,10 @@ import '../models/task.dart';
 import '../utils/date_formatter.dart';
 
 /// A Material 3 card displaying a single [Task] with its title, notes,
-/// status badge, due date (all-day or with time), and completed timestamp.
+/// status badge, due date (all-day or with time), the moment it becomes
+/// active, and completed timestamp.
+///
+/// Long-pressing the card invokes [onShowDebug] when provided.
 class TaskCard extends StatelessWidget {
   const TaskCard({
     super.key,
@@ -13,6 +16,7 @@ class TaskCard extends StatelessWidget {
     required this.onToggleStatus,
     required this.onTap,
     required this.onDelete,
+    this.onShowDebug,
   });
 
   final Task task;
@@ -20,6 +24,7 @@ class TaskCard extends StatelessWidget {
   final VoidCallback onToggleStatus;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback? onShowDebug;
 
   @override
   Widget build(BuildContext context) {
@@ -27,6 +32,8 @@ class TaskCard extends StatelessWidget {
     final TextTheme textTheme = Theme.of(context).textTheme;
     final bool isCompleted = task.isCompleted;
     final bool isOverdue = task.isOverdue(now);
+    final DateTime? activatesAt = task.activatesAt;
+    final bool isPendingActivation = task.isPendingActivation(now);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -45,6 +52,7 @@ class TaskCard extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
+        onLongPress: onShowDebug,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(8, 12, 12, 12),
           child: Row(
@@ -112,6 +120,16 @@ class TaskCard extends StatelessWidget {
                               isAllDay: task.isAllDay,
                               isOverdue: isOverdue,
                               isCompleted: isCompleted,
+                              now: now,
+                            ),
+                          if (!isCompleted && activatesAt != null)
+                            _ActivationChip(
+                              key: ValueKey<String>(
+                                'task-activation-${task.id}',
+                              ),
+                              activatesAt: activatesAt,
+                              isAllDay: task.isAllDay,
+                              isPending: isPendingActivation,
                               now: now,
                             ),
                           if (task.completedAt != null)
@@ -234,6 +252,66 @@ class _DueDateChip extends StatelessWidget {
               color: foregroundColor,
               fontWeight: isOverdue ? FontWeight.w600 : FontWeight.w500,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shows when an active task starts (or started) showing up as active.
+class _ActivationChip extends StatelessWidget {
+  const _ActivationChip({
+    super.key,
+    required this.activatesAt,
+    required this.isAllDay,
+    required this.isPending,
+    required this.now,
+  });
+
+  final DateTime activatesAt;
+  final bool isAllDay;
+  final bool isPending;
+  final DateTime now;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final String when = TaskDateFormatter.formatActivation(
+      activatesAt,
+      isAllDay: isAllDay,
+      now: now,
+    );
+    final String label = isPending ? 'Activates $when' : 'Active since $when';
+
+    final Color backgroundColor = isPending
+        ? colorScheme.primaryContainer.withValues(alpha: 0.7)
+        : colorScheme.surfaceContainerHighest.withValues(alpha: 0.6);
+    final Color foregroundColor = isPending
+        ? colorScheme.onPrimaryContainer
+        : colorScheme.onSurfaceVariant;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            isPending
+                ? Icons.hourglass_top_rounded
+                : Icons.play_circle_outline_rounded,
+            size: 14,
+            color: foregroundColor,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium
+                ?.copyWith(color: foregroundColor, fontWeight: FontWeight.w500),
           ),
         ],
       ),

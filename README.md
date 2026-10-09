@@ -58,6 +58,28 @@ Remind Me Again stores tasks off-device in the signed-in user's default Google T
    warning; you can then still supply `GOOGLE_IOS_CLIENT_ID` and `GOOGLE_IOS_REVERSED_CLIENT_ID` as
    Xcode build settings instead.
 
+## Task times, activation, and the debug JSON view
+
+Google Calendar lets you give a task a time of day, but the Google Tasks REST API
+[documents](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks) that the
+time portion of `due` is discarded and "isn't possible to read or write" through the API, so a
+task given 5:00 PM in Calendar arrives as `"due": "2026-10-05T00:00:00.000Z"`.
+
+How the app handles this:
+
+- **Parsing (`GoogleTasksRepository.decodeNotesAndDueDate`)** honours, in order: a non-midnight
+  time inside the `due` timestamp (if Google ever returns one), then the
+  `[remind_me_again:due_time=HH:mm]` tag the app writes to the task notes, and otherwise treats the
+  task as all-day on the `due` date. The chosen source is kept on `Task.dueTimeSource`.
+- **Activation (`Task.activatesAt`)** is the moment a task should start showing up as active: the
+  due time for timed tasks, the start of the due day for all-day tasks. Each active card shows an
+  "Activates …" chip while that moment is still in the future and "Active since …" afterwards.
+- **Debug view**: long-press any task card, or tap the `{}` button in the edit sheet, to open the
+  task debug sheet. It lists the derived schedule (due, all-day, time source, activation, overdue)
+  and the raw Google Tasks API JSON for that task. The cached JSON comes from the last list sync;
+  the refresh button performs a verbatim `GET /tasks/v1/lists/@default/tasks/{id}` with the
+  signed-in credentials so you can see exactly what Google returns. Use the copy button to grab it.
+
 ## Building releases
 
 Release builds are obfuscated; keep the generated symbol files (not committed)

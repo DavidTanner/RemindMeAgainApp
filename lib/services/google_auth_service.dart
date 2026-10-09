@@ -157,6 +157,7 @@ class GoogleSignInAuthService implements GoogleAuthService {
     final GoogleTasksRepository repository = GoogleTasksRepository(
       tasksApi: tasksApi,
       taskListId: taskListId,
+      httpClient: authClient,
     );
 
     return GoogleAuthSession(

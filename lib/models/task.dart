@@ -78,6 +78,34 @@ enum TaskDateGroup {
   }
 }
 
+/// Where the time-of-day portion of a timed task's [Task.dueDate] came from.
+///
+/// Useful when debugging what Google Tasks actually returned for a task that
+/// was given a time in Google Calendar.
+enum DueTimeSource {
+  /// The task is all-day; no time-of-day is known.
+  none,
+
+  /// The time was reconstructed from the `[remind_me_again:due_time=HH:mm]`
+  /// tag this app stores in the task notes.
+  notesTag,
+
+  /// The Google Tasks API `due` timestamp itself carried a non-midnight
+  /// time-of-day.
+  dueTimestamp;
+
+  String get label {
+    switch (this) {
+      case DueTimeSource.none:
+        return 'None (all-day)';
+      case DueTimeSource.notesTag:
+        return 'Notes tag [remind_me_again:due_time]';
+      case DueTimeSource.dueTimestamp:
+        return 'API "due" timestamp';
+    }
+  }
+}
+
 /// Immutable model representing a task in Remind Me Again.
 @immutable
 class Task {
@@ -89,6 +117,8 @@ class Task {
     this.completedAt,
     this.dueDate,
     this.isAllDay = true,
+    this.dueTimeSource = DueTimeSource.none,
+    this.rawJson,
   });
 
   final String id;
@@ -99,7 +129,40 @@ class Task {
   final DateTime? dueDate;
   final bool isAllDay;
 
+  /// Where the time-of-day in [dueDate] was sourced from (see [DueTimeSource]).
+  final DueTimeSource dueTimeSource;
+
+  /// The most recent raw Google Tasks API JSON for this task, if it came from
+  /// the API. Kept for the in-app debug view; `null` for local-only tasks.
+  final Map<String, dynamic>? rawJson;
+
   bool get isCompleted => status == TaskStatus.completed;
+
+  /// The moment this task should start showing up as active.
+  ///
+  /// For timed tasks this is the due date-time itself. For all-day tasks it is
+  /// the start of the due day. Tasks without a due date are active immediately
+  /// and return `null`.
+  DateTime? get activatesAt {
+    final DateTime? due = dueDate;
+    if (due == null) {
+      return null;
+    }
+    if (isAllDay) {
+      return DateTime(due.year, due.month, due.day);
+    }
+    return due;
+  }
+
+  /// Returns true if the task is active but its [activatesAt] moment is still
+  /// in the future relative to [now].
+  bool isPendingActivation(DateTime now) {
+    final DateTime? activation = activatesAt;
+    if (isCompleted || activation == null) {
+      return false;
+    }
+    return now.isBefore(activation);
+  }
 
   /// Returns true if the task is active and its due date/time has passed
   /// relative to [now].
@@ -161,6 +224,8 @@ class Task {
     DateTime? dueDate,
     bool clearDueDate = false,
     bool? isAllDay,
+    DueTimeSource? dueTimeSource,
+    Map<String, dynamic>? rawJson,
   }) {
     return Task(
       id: id ?? this.id,
@@ -170,6 +235,8 @@ class Task {
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
       dueDate: clearDueDate ? null : (dueDate ?? this.dueDate),
       isAllDay: isAllDay ?? this.isAllDay,
+      dueTimeSource: dueTimeSource ?? this.dueTimeSource,
+      rawJson: rawJson ?? this.rawJson,
     );
   }
 

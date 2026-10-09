@@ -4,6 +4,7 @@ import '../models/task.dart';
 import '../services/google_auth_service.dart';
 import '../services/task_repository.dart';
 import '../widgets/task_card.dart';
+import '../widgets/task_debug_sheet.dart';
 import '../widgets/task_form_sheet.dart';
 
 /// Main screen displaying the user's tasks synced with Google Tasks off-device,
@@ -525,7 +526,44 @@ class _TaskListScreenState extends State<TaskListScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (BuildContext context) {
-        return TaskFormSheet(initialTask: task, now: _now, onSave: _saveTask);
+        return TaskFormSheet(
+          initialTask: task,
+          now: _now,
+          onSave: _saveTask,
+          onShowDebug: task == null ? null : () => _openTaskDebug(task),
+        );
+      },
+    );
+  }
+
+  Future<void> _openTaskDebug(Task task) async {
+    final TaskRepository? repository = _repository;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (BuildContext context) {
+        return TaskDebugSheet(
+          task: task,
+          now: _now,
+          fetchJson: repository == null
+              ? null
+              : () => repository.fetchTaskJson(task.id),
+          onJsonFetched: (Map<String, dynamic> json) {
+            if (!mounted) {
+              return;
+            }
+            final int index = _tasks.indexWhere((Task t) => t.id == task.id);
+            if (index != -1) {
+              setState(() {
+                _tasks[index] = _tasks[index].copyWith(rawJson: json);
+              });
+            }
+          },
+        );
       },
     );
   }
@@ -723,6 +761,8 @@ class _TaskListScreenState extends State<TaskListScreen> {
                                           onTap: () =>
                                               _openTaskForm(task: task),
                                           onDelete: () => _deleteTask(task),
+                                          onShowDebug: () =>
+                                              _openTaskDebug(task),
                                         ),
                                     ],
                                   );

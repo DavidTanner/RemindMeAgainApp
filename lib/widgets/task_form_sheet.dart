@@ -10,11 +10,15 @@ class TaskFormSheet extends StatefulWidget {
     this.initialTask,
     required this.now,
     required this.onSave,
+    this.onShowDebug,
   });
 
   final Task? initialTask;
   final DateTime now;
   final ValueChanged<Task> onSave;
+
+  /// When editing an existing task, opens the task debug/JSON view.
+  final VoidCallback? onShowDebug;
 
   @override
   State<TaskFormSheet> createState() => _TaskFormSheetState();
@@ -214,10 +218,22 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded),
-                    onPressed: () => Navigator.of(context).pop(),
-                    tooltip: 'Close',
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (_isEditing && widget.onShowDebug != null)
+                        IconButton(
+                          key: const ValueKey<String>('task-debug-button'),
+                          icon: const Icon(Icons.data_object_rounded),
+                          onPressed: widget.onShowDebug,
+                          tooltip: 'Show task JSON',
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.of(context).pop(),
+                        tooltip: 'Close',
+                      ),
+                    ],
                   ),
                 ],
               ),
