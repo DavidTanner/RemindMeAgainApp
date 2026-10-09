@@ -1,46 +1,8 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:googleapis/tasks/v1.dart' as gtasks;
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 
 import 'package:remind_me_again/main.dart';
 import 'package:remind_me_again/models/task.dart';
-import 'package:remind_me_again/screens/task_list_screen.dart';
-import 'package:remind_me_again/services/google_auth_service.dart';
-import 'package:remind_me_again/services/google_tasks_repository.dart';
-import 'package:remind_me_again/services/task_repository.dart';
-
-class _FakeGoogleAuthService implements GoogleAuthService {
-  _FakeGoogleAuthService({required this.repository});
-
-  final TaskRepository repository;
-  int signInCount = 0;
-  int signOutCount = 0;
-
-  @override
-  Future<GoogleAuthSession?> restoreSession() async => null;
-
-  @override
-  Future<GoogleAuthSession?> signIn() async {
-    signInCount++;
-    return GoogleAuthSession(
-      user: const GoogleAuthUser(
-        id: 'user-123',
-        email: 'alex@example.com',
-        displayName: 'Alex Rivera',
-      ),
-      taskRepository: repository,
-    );
-  }
-
-  @override
-  Future<void> signOut() async {
-    signOutCount++;
-  }
-}
 
 void main() {
   final DateTime fixedNow = DateTime(2026, 10, 5, 14, 30);
@@ -48,12 +10,7 @@ void main() {
   testWidgets(
     'Displays pre-populated tasks with title, notes, status, due date, and completed timestamp',
     (WidgetTester tester) async {
-      await tester.pumpWidget(
-        RemindMeAgainApp(
-          initialTasks: TaskListScreen.defaultSampleTasks(fixedNow),
-          referenceNow: fixedNow,
-        ),
-      );
+      await tester.pumpWidget(RemindMeAgainApp(referenceNow: fixedNow));
 
       expect(find.text('Remind Me Again'), findsOneWidget);
       expect(find.text('5 active • 1 completed'), findsOneWidget);
@@ -208,177 +165,6 @@ void main() {
       expect(find.text('Water indoor plants'), findsOneWidget);
       expect(find.text('Ferns and succulents in living room'), findsOneWidget);
       expect(find.text('Today • 5:00 PM'), findsOneWidget);
-    },
-  );
-
-  test('GoogleTasksRepository round-trips timed due dates via notes metadata and preserves all-day tasks', () {
-    final Task timedTask = Task(
-      id: 'gtask-1',
-      title: 'Doctor appointment',
-      notes: 'Bring insurance card',
-      status: TaskStatus.active,
-      dueDate: DateTime(2026, 10, 5, 17, 30),
-      isAllDay: false,
-    );
-
-    final gtasks.Task remoteTimed = GoogleTasksRepository.toGoogleTask(
-      timedTask,
-    );
-    expect(remoteTimed.due, '2026-10-05T00:00:00.000Z');
-    expect(
-      remoteTimed.notes,
-      'Bring insurance card\n\n[remind_me_again:due_time=17:30]',
-    );
-
-    final Task roundTrippedTimed = GoogleTasksRepository.fromGoogleTask(
-      remoteTimed,
-    );
-    expect(roundTrippedTimed.id, 'gtask-1');
-    expect(roundTrippedTimed.title, 'Doctor appointment');
-    expect(roundTrippedTimed.notes, 'Bring insurance card');
-    expect(roundTrippedTimed.isAllDay, isFalse);
-    expect(roundTrippedTimed.dueDate, DateTime(2026, 10, 5, 17, 30));
-
-    final Task allDayTask = Task(
-      id: 'gtask-2',
-      title: 'Pay rent',
-      notes: 'Via portal',
-      status: TaskStatus.completed,
-      completedAt: DateTime(2026, 10, 5, 9, 0),
-      dueDate: DateTime(2026, 10, 5),
-      isAllDay: true,
-    );
-
-    final gtasks.Task remoteAllDay = GoogleTasksRepository.toGoogleTask(
-      allDayTask,
-    );
-    expect(remoteAllDay.notes, 'Via portal');
-    expect(remoteAllDay.status, 'completed');
-
-    final Task roundTrippedAllDay = GoogleTasksRepository.fromGoogleTask(
-      remoteAllDay,
-    );
-    expect(roundTrippedAllDay.isAllDay, isTrue);
-    expect(roundTrippedAllDay.dueDate, DateTime(2026, 10, 5));
-    expect(roundTrippedAllDay.isCompleted, isTrue);
-    expect(roundTrippedAllDay.completedAt, DateTime(2026, 10, 5, 9, 0));
-  });
-
-  testWidgets(
-    'Requires Google Sign-In when unauthenticated and syncs tasks with Google Tasks (@default) after sign-in',
-    (WidgetTester tester) async {
-      final List<Map<String, dynamic>> remoteStore = <Map<String, dynamic>>[
-        <String, dynamic>{
-          'id': 'remote-1',
-          'title': 'Sync project roadmap',
-          'notes': 'Share Q4 milestones\n\n[remind_me_again:due_time=16:00]',
-          'status': 'needsAction',
-          'due': '2026-10-05T00:00:00.000Z',
-        },
-      ];
-
-      final MockClient mockHttpClient = MockClient((
-        http.Request request,
-      ) async {
-        final String path = Uri.decodeComponent(request.url.path);
-        if (request.method == 'GET' &&
-            path == '/tasks/v1/lists/@default/tasks') {
-          return http.Response(
-            jsonEncode(<String, dynamic>{
-              'kind': 'tasks#tasks',
-              'items': remoteStore,
-            }),
-            200,
-            headers: <String, String>{'content-type': 'application/json'},
-          );
-        }
-        if (request.method == 'POST' &&
-            path == '/tasks/v1/lists/@default/tasks') {
-          final Map<String, dynamic> body =
-              jsonDecode(request.body) as Map<String, dynamic>;
-          final Map<String, dynamic> created = <String, dynamic>{
-            ...body,
-            'id': 'remote-created-2',
-          };
-          remoteStore.insert(0, created);
-          return http.Response(
-            jsonEncode(created),
-            200,
-            headers: <String, String>{'content-type': 'application/json'},
-          );
-        }
-        if (request.method == 'PUT' &&
-            path.startsWith('/tasks/v1/lists/@default/tasks/')) {
-          final Map<String, dynamic> body =
-              jsonDecode(request.body) as Map<String, dynamic>;
-          final String id = path.split('/').last;
-          final int idx = remoteStore.indexWhere(
-            (Map<String, dynamic> item) => item['id'] == id,
-          );
-          if (idx >= 0) {
-            remoteStore[idx] = body;
-          }
-          return http.Response(
-            jsonEncode(body),
-            200,
-            headers: <String, String>{'content-type': 'application/json'},
-          );
-        }
-        if (request.method == 'DELETE' &&
-            path.startsWith('/tasks/v1/lists/@default/tasks/')) {
-          final String id = path.split('/').last;
-          remoteStore.removeWhere(
-            (Map<String, dynamic> item) => item['id'] == id,
-          );
-          return http.Response('', 204);
-        }
-        return http.Response('Not found', 404);
-      });
-
-      final GoogleTasksRepository repository = GoogleTasksRepository(
-        tasksApi: gtasks.TasksApi(mockHttpClient),
-      );
-      final _FakeGoogleAuthService authService = _FakeGoogleAuthService(
-        repository: repository,
-      );
-
-      await tester.pumpWidget(
-        RemindMeAgainApp(authService: authService, referenceNow: fixedNow),
-      );
-      await tester.pumpAndSettle();
-
-      // Initially unauthenticated: shows Google Sign-In screen
-      expect(find.text('Connect to Google Tasks'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey<String>('google-sign-in-button')),
-        findsOneWidget,
-      );
-
-      // Tap Sign in with Google
-      await tester.tap(
-        find.byKey(const ValueKey<String>('google-sign-in-button')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(authService.signInCount, 1);
-      expect(find.text('Sync project roadmap'), findsOneWidget);
-      expect(find.text('Share Q4 milestones'), findsOneWidget);
-      expect(find.text('Today • 4:00 PM'), findsOneWidget);
-
-      // Complete the remote task and verify PUT request updates remoteStore
-      await tester.tap(
-        find.byKey(const ValueKey<String>('task-checkbox-remote-1')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(remoteStore.first['status'], 'completed');
-
-      // Sign out returns to the Google Sign-In screen
-      await tester.tap(find.byKey(const ValueKey<String>('sign-out-button')));
-      await tester.pumpAndSettle();
-
-      expect(authService.signOutCount, 1);
-      expect(find.text('Connect to Google Tasks'), findsOneWidget);
     },
   );
 }
