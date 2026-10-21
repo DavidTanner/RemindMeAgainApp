@@ -88,7 +88,18 @@ class Task {
     this.completedAt,
     this.dueDate,
     this.isAllDay = true,
-  });
+    bool? hasAlarm,
+    this.snoozedUntil,
+    this.snoozeDurationMinutes = defaultSnoozeMinutes,
+    this.snoozeCount = 0,
+    this.alarmDismissed = false,
+  }) : hasAlarm = hasAlarm ?? (!isAllDay && dueDate != null);
+
+  /// Default snooze duration in minutes when an alarm is snoozed.
+  static const int defaultSnoozeMinutes = 10;
+
+  /// Standard preset snooze durations in minutes available to the user.
+  static const List<int> presetSnoozeMinutes = <int>[5, 10, 15, 30, 60];
 
   final String id;
   final String title;
@@ -97,13 +108,64 @@ class Task {
   final DateTime? completedAt;
   final DateTime? dueDate;
   final bool isAllDay;
+  final bool hasAlarm;
+  final DateTime? snoozedUntil;
+  final int snoozeDurationMinutes;
+  final int snoozeCount;
+  final bool alarmDismissed;
 
   bool get isCompleted => status == TaskStatus.completed;
+
+  /// Configured snooze [Duration] for this task's alarm.
+  Duration get snoozeDuration => Duration(minutes: snoozeDurationMinutes);
+
+  /// The scheduled [DateTime] when this task's alarm should trigger,
+  /// accounting for any active snooze.
+  DateTime? get effectiveAlarmTime {
+    if (!hasAlarm || isCompleted) {
+      return null;
+    }
+    if (snoozedUntil != null) {
+      return snoozedUntil;
+    }
+    if (dueDate == null) {
+      return null;
+    }
+    if (isAllDay) {
+      return DateTime(dueDate!.year, dueDate!.month, dueDate!.day, 9, 0);
+    }
+    return dueDate;
+  }
+
+  /// Returns true if the task has an active snooze scheduled in the future
+  /// relative to [now].
+  bool isSnoozed(DateTime now) {
+    return !isCompleted &&
+        hasAlarm &&
+        snoozedUntil != null &&
+        snoozedUntil!.isAfter(now);
+  }
+
+  /// Returns true if the task's alarm is enabled, not dismissed, and its
+  /// [effectiveAlarmTime] has been reached or passed relative to [now].
+  bool isAlarmRinging(DateTime now) {
+    if (isCompleted || !hasAlarm || alarmDismissed) {
+      return false;
+    }
+    final DateTime? alarmTime = effectiveAlarmTime;
+    if (alarmTime == null) {
+      return false;
+    }
+    return !alarmTime.isAfter(now);
+  }
 
   /// Returns true if the task is active and its due date/time has passed
   /// relative to [now].
   bool isOverdue(DateTime now) {
     if (isCompleted || dueDate == null) {
+      return false;
+    }
+    if (isSnoozed(now)) {
       return false;
     }
     final DateTime due = dueDate!;
@@ -120,21 +182,22 @@ class Task {
     if (isCompleted) {
       return TaskDateGroup.completed;
     }
-    if (dueDate == null) {
+    if (dueDate == null && snoozedUntil == null) {
       return TaskDateGroup.noDueDate;
     }
     if (isOverdue(now)) {
       return TaskDateGroup.overdue;
     }
+    final DateTime referenceDate = (isSnoozed(now) ? snoozedUntil : dueDate)!;
     final DateTime todayStart = DateTime(now.year, now.month, now.day);
     final DateTime tomorrowStart = todayStart.add(const Duration(days: 1));
     final DateTime dayAfterTomorrowStart = todayStart.add(
       const Duration(days: 2),
     );
     final DateTime dueDay = DateTime(
-      dueDate!.year,
-      dueDate!.month,
-      dueDate!.day,
+      referenceDate.year,
+      referenceDate.month,
+      referenceDate.day,
     );
 
     if (dueDay.isAtSameMomentAs(todayStart)) {
@@ -160,16 +223,56 @@ class Task {
     DateTime? dueDate,
     bool clearDueDate = false,
     bool? isAllDay,
+    bool? hasAlarm,
+    DateTime? snoozedUntil,
+    bool clearSnoozedUntil = false,
+    int? snoozeDurationMinutes,
+    int? snoozeCount,
+    bool? alarmDismissed,
   }) {
+    final bool updatedIsAllDay = isAllDay ?? this.isAllDay;
+    final DateTime? updatedDueDate = clearDueDate
+        ? null
+        : (dueDate ?? this.dueDate);
     return Task(
       id: id ?? this.id,
       title: title ?? this.title,
       notes: notes ?? this.notes,
       status: status ?? this.status,
       completedAt: clearCompletedAt ? null : (completedAt ?? this.completedAt),
-      dueDate: clearDueDate ? null : (dueDate ?? this.dueDate),
-      isAllDay: isAllDay ?? this.isAllDay,
+      dueDate: updatedDueDate,
+      isAllDay: updatedIsAllDay,
+      hasAlarm: hasAlarm ?? this.hasAlarm,
+      snoozedUntil: clearSnoozedUntil
+          ? null
+          : (snoozedUntil ?? this.snoozedUntil),
+      snoozeDurationMinutes:
+          snoozeDurationMinutes ?? this.snoozeDurationMinutes,
+      snoozeCount: snoozeCount ?? this.snoozeCount,
+      alarmDismissed: alarmDismissed ?? this.alarmDismissed,
     );
+  }
+
+  /// Snoozes the task's alarm by [duration] (or [snoozeDuration] if omitted)
+  /// relative to [now], scheduling a new [snoozedUntil] timestamp.
+  Task snooze({Duration? duration, DateTime? now}) {
+    final DateTime timestamp = now ?? DateTime.now();
+    final Duration effectiveDuration = duration ?? snoozeDuration;
+    final int minutes = effectiveDuration.inMinutes > 0
+        ? effectiveDuration.inMinutes
+        : snoozeDurationMinutes;
+    return copyWith(
+      hasAlarm: true,
+      snoozedUntil: timestamp.add(effectiveDuration),
+      snoozeDurationMinutes: minutes,
+      snoozeCount: snoozeCount + 1,
+      alarmDismissed: false,
+    );
+  }
+
+  /// Dismisses the currently ringing or snoozed alarm without completing the task.
+  Task dismissAlarm() {
+    return copyWith(alarmDismissed: true, clearSnoozedUntil: true);
   }
 
   /// Toggles the task between [TaskStatus.active] and [TaskStatus.completed],
@@ -177,9 +280,18 @@ class Task {
   Task toggleStatus({DateTime? now}) {
     final DateTime timestamp = now ?? DateTime.now();
     if (isCompleted) {
-      return copyWith(status: TaskStatus.active, clearCompletedAt: true);
+      return copyWith(
+        status: TaskStatus.active,
+        clearCompletedAt: true,
+        alarmDismissed: false,
+      );
     } else {
-      return copyWith(status: TaskStatus.completed, completedAt: timestamp);
+      return copyWith(
+        status: TaskStatus.completed,
+        completedAt: timestamp,
+        clearSnoozedUntil: true,
+        alarmDismissed: false,
+      );
     }
   }
 }

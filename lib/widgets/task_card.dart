@@ -4,7 +4,8 @@ import '../models/task.dart';
 import '../utils/date_formatter.dart';
 
 /// A Material 3 card displaying a single [Task] with its title, notes,
-/// status badge, due date (all-day or with time), and completed timestamp.
+/// status badge, due date (all-day or with time), alarm status, snooze
+/// controls, and completed timestamp.
 class TaskCard extends StatelessWidget {
   const TaskCard({
     super.key,
@@ -13,6 +14,8 @@ class TaskCard extends StatelessWidget {
     required this.onToggleStatus,
     required this.onTap,
     required this.onDelete,
+    this.onSnooze,
+    this.onOpenAlarm,
   });
 
   final Task task;
@@ -20,6 +23,8 @@ class TaskCard extends StatelessWidget {
   final VoidCallback onToggleStatus;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback? onSnooze;
+  final VoidCallback? onOpenAlarm;
 
   @override
   Widget build(BuildContext context) {
@@ -27,6 +32,10 @@ class TaskCard extends StatelessWidget {
     final TextTheme textTheme = Theme.of(context).textTheme;
     final bool isCompleted = task.isCompleted;
     final bool isOverdue = task.isOverdue(now);
+    final bool isRinging = task.isAlarmRinging(now);
+    final bool isSnoozed = task.isSnoozed(now);
+    final bool showAlarmControls =
+        !isCompleted && (task.hasAlarm || isSnoozed || isRinging);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -34,7 +43,7 @@ class TaskCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: isOverdue
+          color: (isOverdue || isRinging)
               ? colorScheme.error.withValues(alpha: 0.45)
               : colorScheme.outlineVariant.withValues(alpha: 0.65),
         ),
@@ -100,7 +109,8 @@ class TaskCard extends StatelessWidget {
                       ),
                     ],
                     if (task.dueDate != null ||
-                        task.completedAt != null) ...<Widget>[
+                        task.completedAt != null ||
+                        showAlarmControls) ...<Widget>[
                       const SizedBox(height: 10),
                       Wrap(
                         spacing: 8,
@@ -113,6 +123,21 @@ class TaskCard extends StatelessWidget {
                               isOverdue: isOverdue,
                               isCompleted: isCompleted,
                               now: now,
+                            ),
+                          if (showAlarmControls)
+                            _AlarmStatusChip(
+                              key: ValueKey<String>(
+                                'task-alarm-chip-${task.id}',
+                              ),
+                              task: task,
+                              now: now,
+                              onTap: onOpenAlarm,
+                            ),
+                          if (showAlarmControls && onSnooze != null)
+                            _SnoozeActionChip(
+                              key: ValueKey<String>('task-snooze-${task.id}'),
+                              snoozeMinutes: task.snoozeDurationMinutes,
+                              onSnooze: onSnooze!,
                             ),
                           if (task.completedAt != null)
                             _CompletedTimestampChip(
@@ -236,6 +261,125 @@ class _DueDateChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AlarmStatusChip extends StatelessWidget {
+  const _AlarmStatusChip({
+    super.key,
+    required this.task,
+    required this.now,
+    this.onTap,
+  });
+
+  final Task task;
+  final DateTime now;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final bool isSnoozed = task.isSnoozed(now);
+    final bool isRinging = task.isAlarmRinging(now);
+
+    final Color backgroundColor;
+    final Color foregroundColor;
+    final IconData icon;
+    final String label;
+
+    if (isSnoozed && task.snoozedUntil != null) {
+      backgroundColor = colorScheme.secondaryContainer;
+      foregroundColor = colorScheme.onSecondaryContainer;
+      icon = Icons.snooze_rounded;
+      label = TaskDateFormatter.formatSnoozedUntil(
+        task.snoozedUntil!,
+        now: now,
+      );
+    } else if (isRinging) {
+      backgroundColor = colorScheme.errorContainer;
+      foregroundColor = colorScheme.onErrorContainer;
+      icon = Icons.notifications_active_rounded;
+      label = 'Alarm ringing';
+    } else {
+      backgroundColor = colorScheme.primaryContainer.withValues(alpha: 0.65);
+      foregroundColor = colorScheme.onPrimaryContainer;
+      icon = Icons.alarm_rounded;
+      label = 'Alarm';
+    }
+
+    return Material(
+      color: backgroundColor,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon, size: 14, color: foregroundColor),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: foregroundColor,
+                  fontWeight: (isRinging || isSnoozed)
+                      ? FontWeight.w600
+                      : FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SnoozeActionChip extends StatelessWidget {
+  const _SnoozeActionChip({
+    super.key,
+    required this.snoozeMinutes,
+    required this.onSnooze,
+  });
+
+  final int snoozeMinutes;
+  final VoidCallback onSnooze;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+
+    return Material(
+      color: colorScheme.primaryContainer,
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onSnooze,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                Icons.snooze_rounded,
+                size: 14,
+                color: colorScheme.onPrimaryContainer,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'Snooze',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

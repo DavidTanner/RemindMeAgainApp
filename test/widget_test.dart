@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:remind_me_again/main.dart';
 import 'package:remind_me_again/models/task.dart';
+import 'package:remind_me_again/services/alarm_service.dart';
 
 void main() {
   final DateTime fixedNow = DateTime(2026, 10, 5, 14, 30);
@@ -165,6 +167,166 @@ void main() {
       expect(find.text('Water indoor plants'), findsOneWidget);
       expect(find.text('Ferns and succulents in living room'), findsOneWidget);
       expect(find.text('Today • 5:00 PM'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'Quick snoozes an active alarm from the task card and updates scheduled alarm',
+    (WidgetTester tester) async {
+      final AlarmService alarmService = AlarmService();
+      final List<Task> tasks = <Task>[
+        Task(
+          id: 'alarm-1',
+          title: 'Take afternoon medication',
+          notes: 'With a full glass of water',
+          status: TaskStatus.active,
+          dueDate: DateTime(2026, 10, 5, 14, 0),
+          isAllDay: false,
+        ),
+      ];
+
+      await tester.pumpWidget(
+        RemindMeAgainApp(
+          initialTasks: tasks,
+          referenceNow: fixedNow,
+          alarmService: alarmService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Alarm ringing'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('task-snooze-alarm-1')),
+        findsOneWidget,
+      );
+
+      // Tap Snooze on the task card (default 10 min from 2:30 PM -> 2:40 PM)
+      await tester.tap(
+        find.byKey(const ValueKey<String>('task-snooze-alarm-1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Snoozed until 2:40 PM'), findsOneWidget);
+      expect(
+        alarmService.scheduledAlarms['alarm-1']?.scheduledAt,
+        DateTime(2026, 10, 5, 14, 40),
+      );
+    },
+  );
+
+  testWidgets(
+    'Triggers alarm dialog when scheduled time arrives and supports custom snooze duration',
+    (WidgetTester tester) async {
+      final AlarmService alarmService = AlarmService();
+      final List<Task> tasks = <Task>[
+        Task(
+          id: 'alarm-2',
+          title: 'Join client call',
+          notes: 'Zoom link in calendar invite',
+          status: TaskStatus.active,
+          dueDate: DateTime(2026, 10, 5, 14, 35),
+          isAllDay: false,
+        ),
+      ];
+
+      await tester.pumpWidget(
+        RemindMeAgainApp(
+          initialTasks: tasks,
+          referenceNow: fixedNow,
+          alarmService: alarmService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Advance time by 5 minutes so the alarm triggers at 2:35 PM
+      await tester.pump(const Duration(minutes: 5));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('alarm-ring-dialog')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('alarm-dialog-title')),
+        findsOneWidget,
+      );
+
+      // Select 15 min snooze preset and tap Snooze
+      await tester.tap(find.byKey(const ValueKey<String>('snooze-preset-15')));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('alarm-snooze-button')),
+      );
+      await tester.pumpAndSettle();
+
+      // 2:35 PM + 15 min = 2:50 PM
+      expect(find.text('Snoozed until 2:50 PM'), findsOneWidget);
+      expect(
+        alarmService.scheduledAlarms['alarm-2']?.scheduledAt,
+        DateTime(2026, 10, 5, 14, 50),
+      );
+    },
+  );
+
+  testWidgets(
+    'Handles OS notification snooze and complete actions via AlarmService',
+    (WidgetTester tester) async {
+      final AlarmService alarmService = AlarmService();
+      final List<Task> tasks = <Task>[
+        Task(
+          id: 'alarm-3',
+          title: 'Check oven timer',
+          notes: 'Sourdough loaf',
+          status: TaskStatus.active,
+          dueDate: DateTime(2026, 10, 5, 15, 0),
+          isAllDay: false,
+          snoozeDurationMinutes: 5,
+        ),
+      ];
+
+      await tester.pumpWidget(
+        RemindMeAgainApp(
+          initialTasks: tasks,
+          referenceNow: fixedNow,
+          alarmService: alarmService,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final String payload = AlarmService.encodePayload(
+        taskId: 'alarm-3',
+        title: 'Check oven timer',
+        notes: 'Sourdough loaf',
+        snoozeMinutes: 5,
+      );
+
+      // Simulate tapping the Snooze action button on the OS notification
+      await alarmService.handleNotificationResponse(
+        NotificationResponse(
+          notificationResponseType:
+              NotificationResponseType.selectedNotificationAction,
+          actionId: AlarmService.actionSnoozeId,
+          payload: payload,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Snoozed until 2:35 PM'), findsOneWidget);
+
+      // Simulate tapping the Complete action button on the OS notification
+      await alarmService.handleNotificationResponse(
+        NotificationResponse(
+          notificationResponseType:
+              NotificationResponseType.selectedNotificationAction,
+          actionId: AlarmService.actionCompleteId,
+          payload: payload,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('0 active • 1 completed'), findsOneWidget);
+      expect(alarmService.scheduledAlarms.containsKey('alarm-3'), isFalse);
     },
   );
 }

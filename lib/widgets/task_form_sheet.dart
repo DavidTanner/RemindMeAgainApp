@@ -31,6 +31,8 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
   late DateTime _selectedDueDate;
   late TimeOfDay _selectedDueTime;
   late bool _isAllDay;
+  late bool _hasAlarm;
+  late int _snoozeDurationMinutes;
 
   bool get _isEditing => widget.initialTask != null;
 
@@ -42,6 +44,8 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
     _notesController = TextEditingController(text: task?.notes ?? '');
     _status = task?.status ?? TaskStatus.active;
     _completedAt = task?.completedAt;
+    _snoozeDurationMinutes =
+        task?.snoozeDurationMinutes ?? Task.defaultSnoozeMinutes;
 
     if (task?.dueDate != null) {
       _hasDueDate = true;
@@ -49,6 +53,7 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
       _selectedDueDate = DateTime(due.year, due.month, due.day);
       _selectedDueTime = TimeOfDay(hour: due.hour, minute: due.minute);
       _isAllDay = task.isAllDay;
+      _hasAlarm = task.hasAlarm;
     } else {
       _hasDueDate = true;
       _selectedDueDate = DateTime(
@@ -58,6 +63,7 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
       );
       _selectedDueTime = const TimeOfDay(hour: 17, minute: 0);
       _isAllDay = true;
+      _hasAlarm = false;
       if (task != null && task.dueDate == null) {
         _hasDueDate = false;
       }
@@ -154,6 +160,9 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
         ? (_completedAt ?? widget.now)
         : null;
 
+    final bool dueDateUnchanged = widget.initialTask?.dueDate == finalDueDate;
+    final bool effectiveHasAlarm = _hasDueDate && _hasAlarm;
+
     final Task result = Task(
       id:
           widget.initialTask?.id ??
@@ -164,6 +173,13 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
       completedAt: finalCompletedAt,
       dueDate: finalDueDate,
       isAllDay: _isAllDay,
+      hasAlarm: effectiveHasAlarm,
+      snoozedUntil: (effectiveHasAlarm && dueDateUnchanged)
+          ? widget.initialTask?.snoozedUntil
+          : null,
+      snoozeDurationMinutes: _snoozeDurationMinutes,
+      snoozeCount: widget.initialTask?.snoozeCount ?? 0,
+      alarmDismissed: false,
     );
 
     widget.onSave(result);
@@ -372,6 +388,9 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
                       onChanged: (bool value) {
                         setState(() {
                           _hasDueDate = value;
+                          if (!value) {
+                            _hasAlarm = false;
+                          }
                         });
                       },
                     ),
@@ -394,6 +413,9 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
                         onChanged: (bool value) {
                           setState(() {
                             _isAllDay = value;
+                            if (!value) {
+                              _hasAlarm = true;
+                            }
                           });
                         },
                       ),
@@ -433,6 +455,70 @@ class _TaskFormSheetState extends State<TaskFormSheet> {
                           ],
                         ),
                       ),
+                      const Divider(height: 1),
+                      SwitchListTile(
+                        key: const ValueKey<String>('task-alarm-switch'),
+                        title: const Text('Alarm Notification'),
+                        subtitle: Text(
+                          _hasAlarm
+                              ? 'Notify me with an alarm and snooze option'
+                              : 'No alarm notification scheduled',
+                        ),
+                        secondary: Icon(
+                          _hasAlarm
+                              ? Icons.notifications_active_rounded
+                              : Icons.notifications_none_rounded,
+                        ),
+                        value: _hasAlarm,
+                        onChanged: (bool value) {
+                          setState(() {
+                            _hasAlarm = value;
+                          });
+                        },
+                      ),
+                      if (_hasAlarm)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                'Default Snooze Duration',
+                                style: textTheme.labelMedium?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 6,
+                                children: <Widget>[
+                                  for (final int minutes
+                                      in Task.presetSnoozeMinutes)
+                                    ChoiceChip(
+                                      key: ValueKey<String>(
+                                        'form-snooze-chip-$minutes',
+                                      ),
+                                      label: Text(
+                                        TaskDateFormatter.formatSnoozeDuration(
+                                          minutes,
+                                        ),
+                                      ),
+                                      selected:
+                                          _snoozeDurationMinutes == minutes,
+                                      showCheckmark: false,
+                                      onSelected: (_) {
+                                        setState(() {
+                                          _snoozeDurationMinutes = minutes;
+                                        });
+                                      },
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
                     ],
                   ],
                 ),

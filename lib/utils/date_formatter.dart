@@ -101,4 +101,29 @@ class TaskDateFormatter {
     final String month = _months[date.month - 1];
     return '$weekday, $month ${date.day}, ${date.year}';
   }
+
+  /// Formats a snoozed-until timestamp relative to [now].
+  /// Examples: "Snoozed until 2:40 PM", "Snoozed until Tomorrow • 9:00 AM".
+  static String formatSnoozedUntil(DateTime snoozedUntil, {DateTime? now}) {
+    final DateTime reference = now ?? DateTime.now();
+    final bool sameDay =
+        snoozedUntil.year == reference.year &&
+        snoozedUntil.month == reference.month &&
+        snoozedUntil.day == reference.day;
+    final String timePart = formatTime(snoozedUntil);
+    if (sameDay) {
+      return 'Snoozed until $timePart';
+    }
+    final String datePart = formatRelativeDate(snoozedUntil, now: reference);
+    return 'Snoozed until $datePart • $timePart';
+  }
+
+  /// Formats a snooze duration in minutes into a concise human-readable label.
+  static String formatSnoozeDuration(int minutes) {
+    if (minutes >= 60 && minutes % 60 == 0) {
+      final int hours = minutes ~/ 60;
+      return '$hours hr';
+    }
+    return '$minutes min';
+  }
 }
