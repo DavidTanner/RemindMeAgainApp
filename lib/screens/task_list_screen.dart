@@ -1,16 +1,28 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/task.dart';
+import '../services/alarm_service.dart';
+import '../utils/date_formatter.dart';
+import '../widgets/alarm_ring_dialog.dart';
 import '../widgets/task_card.dart';
 import '../widgets/task_form_sheet.dart';
 
 /// Main screen displaying the user's tasks with status filter chips
-/// (All, Active, Completed) and date-based section grouping.
+/// (All, Active, Completed), date-based section grouping, and alarm
+/// notification and snooze management.
 class TaskListScreen extends StatefulWidget {
-  const TaskListScreen({super.key, this.initialTasks, this.referenceNow});
+  const TaskListScreen({
+    super.key,
+    this.initialTasks,
+    this.referenceNow,
+    this.alarmService,
+  });
 
   final List<Task>? initialTasks;
   final DateTime? referenceNow;
+  final AlarmService? alarmService;
 
   /// Generates default pre-populated sample tasks relative to [now].
   static List<Task> defaultSampleTasks(DateTime now) {
@@ -84,25 +96,128 @@ class TaskListScreen extends StatefulWidget {
 
 class _TaskListScreenState extends State<TaskListScreen> {
   late final List<Task> _tasks;
+  late final AlarmService _alarmService;
+  StreamSubscription<AlarmActionEvent>? _alarmActionSubscription;
+  Timer? _nextAlarmTimer;
+  Duration _elapsedOffset = Duration.zero;
+  bool _isAlarmDialogOpen = false;
+
   TaskFilter _selectedFilter = TaskFilter.all;
   String _searchQuery = '';
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
 
-  DateTime get _now => widget.referenceNow ?? DateTime.now();
+  DateTime get _now {
+    final DateTime base = widget.referenceNow ?? DateTime.now();
+    return base.add(_elapsedOffset);
+  }
 
   @override
   void initState() {
     super.initState();
+    _alarmService = widget.alarmService ?? AlarmService.instance;
     _tasks = List<Task>.from(
       widget.initialTasks ?? TaskListScreen.defaultSampleTasks(_now),
     );
+    _alarmActionSubscription = _alarmService.actionStream.listen(
+      _handleAlarmActionEvent,
+    );
+    unawaited(_initializeAlarms());
+  }
+
+  Future<void> _initializeAlarms() async {
+    await _alarmService.initialize();
+    await _alarmService.requestPermissions();
+    if (!mounted) {
+      return;
+    }
+    await _alarmService.syncTaskAlarms(_tasks, now: _now);
+    if (!mounted) {
+      return;
+    }
+    _scheduleNextInAppAlarmTimer();
   }
 
   @override
   void dispose() {
+    _nextAlarmTimer?.cancel();
+    unawaited(_alarmActionSubscription?.cancel());
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _scheduleNextInAppAlarmTimer() {
+    _nextAlarmTimer?.cancel();
+    _nextAlarmTimer = null;
+
+    final DateTime currentNow = _now;
+    Task? nextAlarmTask;
+    DateTime? earliestTime;
+
+    for (final Task task in _tasks) {
+      if (task.isCompleted || !task.hasAlarm || task.alarmDismissed) {
+        continue;
+      }
+      final DateTime? alarmTime = task.effectiveAlarmTime;
+      if (alarmTime == null || !alarmTime.isAfter(currentNow)) {
+        continue;
+      }
+      if (earliestTime == null || alarmTime.isBefore(earliestTime)) {
+        earliestTime = alarmTime;
+        nextAlarmTask = task;
+      }
+    }
+
+    if (nextAlarmTask != null && earliestTime != null) {
+      final Duration delay = earliestTime.difference(currentNow);
+      final String targetTaskId = nextAlarmTask.id;
+      _nextAlarmTimer = Timer(delay, () {
+        _onAlarmTimerTriggered(targetTaskId, delay);
+      });
+    }
+  }
+
+  void _onAlarmTimerTriggered(String taskId, Duration elapsed) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (widget.referenceNow != null) {
+        _elapsedOffset += elapsed;
+      }
+    });
+    final int index = _tasks.indexWhere((Task t) => t.id == taskId);
+    if (index != -1) {
+      final Task task = _tasks[index];
+      if (!task.isCompleted && task.hasAlarm && !task.alarmDismissed) {
+        unawaited(_alarmService.triggerImmediateAlarm(task));
+        unawaited(_showAlarmDialog(task));
+      }
+    }
+    _scheduleNextInAppAlarmTimer();
+  }
+
+  void _handleAlarmActionEvent(AlarmActionEvent event) {
+    if (!mounted) {
+      return;
+    }
+    final int index = _tasks.indexWhere((Task t) => t.id == event.taskId);
+    if (index == -1) {
+      return;
+    }
+    final Task task = _tasks[index];
+    switch (event.actionType) {
+      case AlarmNotificationActionType.snooze:
+        _snoozeTask(task, duration: event.snoozeDuration);
+      case AlarmNotificationActionType.dismiss:
+        _dismissTaskAlarm(task);
+      case AlarmNotificationActionType.complete:
+        if (!task.isCompleted) {
+          _toggleTaskStatus(task);
+        }
+      case AlarmNotificationActionType.open:
+        unawaited(_showAlarmDialog(task));
+    }
   }
 
   int _countForFilter(TaskFilter filter) {
@@ -154,16 +269,18 @@ class _TaskListScreenState extends State<TaskListScreen> {
               b.completedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
           return bCompleted.compareTo(aCompleted);
         }
-        if (a.dueDate == null && b.dueDate == null) {
+        final DateTime? aDate = a.effectiveAlarmTime ?? a.dueDate;
+        final DateTime? bDate = b.effectiveAlarmTime ?? b.dueDate;
+        if (aDate == null && bDate == null) {
           return a.title.compareTo(b.title);
         }
-        if (a.dueDate == null) {
+        if (aDate == null) {
           return 1;
         }
-        if (b.dueDate == null) {
+        if (bDate == null) {
           return -1;
         }
-        final int dateComparison = a.dueDate!.compareTo(b.dueDate!);
+        final int dateComparison = aDate.compareTo(bDate);
         if (dateComparison != 0) {
           return dateComparison;
         }
@@ -183,9 +300,12 @@ class _TaskListScreenState extends State<TaskListScreen> {
     if (index == -1) {
       return;
     }
+    final Task updated = _tasks[index].toggleStatus(now: _now);
     setState(() {
-      _tasks[index] = _tasks[index].toggleStatus(now: _now);
+      _tasks[index] = updated;
     });
+    unawaited(_alarmService.scheduleTaskAlarm(updated, now: _now));
+    _scheduleNextInAppAlarmTimer();
   }
 
   void _saveTask(Task updatedOrNewTask) {
@@ -199,6 +319,105 @@ class _TaskListScreenState extends State<TaskListScreen> {
         _tasks.insert(0, updatedOrNewTask);
       }
     });
+    unawaited(_alarmService.scheduleTaskAlarm(updatedOrNewTask, now: _now));
+    _scheduleNextInAppAlarmTimer();
+  }
+
+  void _snoozeTask(Task task, {Duration? duration}) {
+    final int index = _tasks.indexWhere((Task t) => t.id == task.id);
+    if (index == -1) {
+      return;
+    }
+    final Task previousTask = _tasks[index];
+    final Task snoozedTask = previousTask.snooze(duration: duration, now: _now);
+    setState(() {
+      _tasks[index] = snoozedTask;
+    });
+    unawaited(_alarmService.scheduleTaskAlarm(snoozedTask, now: _now));
+    _scheduleNextInAppAlarmTimer();
+
+    if (!mounted) {
+      return;
+    }
+    final String durationLabel = TaskDateFormatter.formatSnoozeDuration(
+      (duration ?? previousTask.snoozeDuration).inMinutes,
+    );
+    final String untilLabel = snoozedTask.snoozedUntil != null
+        ? TaskDateFormatter.formatTime(snoozedTask.snoozedUntil!)
+        : '';
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Snoozed "${snoozedTask.title}" for $durationLabel (until $untilLabel)',
+        ),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () {
+            final int currentIndex = _tasks.indexWhere(
+              (Task t) => t.id == previousTask.id,
+            );
+            if (currentIndex != -1) {
+              setState(() {
+                _tasks[currentIndex] = previousTask;
+              });
+              unawaited(
+                _alarmService.scheduleTaskAlarm(previousTask, now: _now),
+              );
+              _scheduleNextInAppAlarmTimer();
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  void _dismissTaskAlarm(Task task) {
+    final int index = _tasks.indexWhere((Task t) => t.id == task.id);
+    if (index == -1) {
+      return;
+    }
+    final Task dismissedTask = _tasks[index].dismissAlarm();
+    setState(() {
+      _tasks[index] = dismissedTask;
+    });
+    unawaited(_alarmService.cancelTaskAlarm(dismissedTask.id));
+    _scheduleNextInAppAlarmTimer();
+  }
+
+  Future<void> _showAlarmDialog(Task task) async {
+    if (_isAlarmDialogOpen || !mounted) {
+      return;
+    }
+    _isAlarmDialogOpen = true;
+    unawaited(_alarmService.triggerImmediateAlarm(task));
+
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlarmRingDialog(
+          task: task,
+          now: _now,
+          onSnooze: (Duration duration) {
+            Navigator.of(dialogContext).pop();
+            _snoozeTask(task, duration: duration);
+          },
+          onDismiss: () {
+            Navigator.of(dialogContext).pop();
+            _dismissTaskAlarm(task);
+          },
+          onComplete: () {
+            Navigator.of(dialogContext).pop();
+            if (!task.isCompleted) {
+              _toggleTaskStatus(task);
+            }
+          },
+        );
+      },
+    );
+
+    _isAlarmDialogOpen = false;
   }
 
   void _deleteTask(Task task) {
@@ -209,6 +428,8 @@ class _TaskListScreenState extends State<TaskListScreen> {
     setState(() {
       _tasks.removeAt(index);
     });
+    unawaited(_alarmService.cancelTaskAlarm(task.id));
+    _scheduleNextInAppAlarmTimer();
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -221,6 +442,8 @@ class _TaskListScreenState extends State<TaskListScreen> {
               final int insertIndex = index.clamp(0, _tasks.length);
               _tasks.insert(insertIndex, task);
             });
+            unawaited(_alarmService.scheduleTaskAlarm(task, now: _now));
+            _scheduleNextInAppAlarmTimer();
           },
         ),
       ),
@@ -241,6 +464,20 @@ class _TaskListScreenState extends State<TaskListScreen> {
     );
   }
 
+  Task? get _primaryAlarmTask {
+    for (final Task task in _tasks) {
+      if (task.isAlarmRinging(_now)) {
+        return task;
+      }
+    }
+    for (final Task task in _tasks) {
+      if (!task.isCompleted && task.hasAlarm) {
+        return task;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
@@ -249,6 +486,7 @@ class _TaskListScreenState extends State<TaskListScreen> {
     final Map<TaskDateGroup, List<Task>> groupedTasks = _groupTasks(filtered);
     final int activeCount = _countForFilter(TaskFilter.active);
     final int completedCount = _countForFilter(TaskFilter.completed);
+    final Task? primaryAlarmTask = _primaryAlarmTask;
 
     return Scaffold(
       appBar: AppBar(
@@ -283,6 +521,22 @@ class _TaskListScreenState extends State<TaskListScreen> {
                 ],
               ),
         actions: <Widget>[
+          if (primaryAlarmTask != null)
+            IconButton(
+              key: const ValueKey<String>('ring-alarm-button'),
+              icon: Icon(
+                primaryAlarmTask.isAlarmRinging(_now)
+                    ? Icons.notifications_active_rounded
+                    : Icons.alarm_rounded,
+                color: primaryAlarmTask.isAlarmRinging(_now)
+                    ? colorScheme.error
+                    : null,
+              ),
+              tooltip: 'Open alarm notification',
+              onPressed: () {
+                unawaited(_showAlarmDialog(primaryAlarmTask));
+              },
+            ),
           IconButton(
             key: const ValueKey<String>('toggle-search-button'),
             icon: Icon(
@@ -346,6 +600,10 @@ class _TaskListScreenState extends State<TaskListScreen> {
                               onToggleStatus: () => _toggleTaskStatus(task),
                               onTap: () => _openTaskForm(task: task),
                               onDelete: () => _deleteTask(task),
+                              onSnooze: () => _snoozeTask(task),
+                              onOpenAlarm: () {
+                                unawaited(_showAlarmDialog(task));
+                              },
                             ),
                         ],
                       );

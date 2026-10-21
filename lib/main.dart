@@ -1,18 +1,29 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'models/task.dart';
 import 'screens/task_list_screen.dart';
+import 'services/alarm_service.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  unawaited(AlarmService.instance.initialize());
   runApp(const RemindMeAgainApp());
 }
 
 /// Root widget for the Remind Me Again task application.
 class RemindMeAgainApp extends StatelessWidget {
-  const RemindMeAgainApp({super.key, this.initialTasks, this.referenceNow});
+  const RemindMeAgainApp({
+    super.key,
+    this.initialTasks,
+    this.referenceNow,
+    this.alarmService,
+  });
 
   final List<Task>? initialTasks;
   final DateTime? referenceNow;
+  final AlarmService? alarmService;
 
   @override
   Widget build(BuildContext context) {
@@ -40,6 +51,7 @@ class RemindMeAgainApp extends StatelessWidget {
       home: TaskListScreen(
         initialTasks: initialTasks,
         referenceNow: referenceNow,
+        alarmService: alarmService,
       ),
     );
   }
